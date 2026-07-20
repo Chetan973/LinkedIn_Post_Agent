@@ -13,10 +13,10 @@ async def get_db() -> AsyncGenerator:
         yield session
 
 
-async def get_checkpointer() -> AsyncGenerator[AsyncPostgresSaver, None]:
+async def get_checkpointer() -> AsyncPostgresSaver:
     """Dependency to provide AsyncPostgresSaver for LangGraph state persistence.
 
-    Yields an initialized AsyncPostgresSaver connected to Supabase.
+    Returns an initialized AsyncPostgresSaver connected to Supabase.
+    No cleanup needed, so we return it directly instead of yielding.
     """
-    checkpointer = AsyncPostgresSaver.from_conn_string(settings.DATABASE_URL)
-    yield checkpointer
+    return AsyncPostgresSaver.from_conn_string(settings.DATABASE_URL)
