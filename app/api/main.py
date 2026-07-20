@@ -12,10 +12,10 @@ async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager for startup and shutdown."""
     # Startup: Initialize database
     await init_db()
-    print("✓ Database initialized")
+    print("[OK] Database initialized")
     yield
     # Shutdown: Cleanup if needed
-    print("✓ Application shutting down")
+    print("[OK] Application shutting down")
 
 
 app = FastAPI(
