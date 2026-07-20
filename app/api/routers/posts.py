@@ -14,6 +14,19 @@ from app.core.config import settings
 router = APIRouter(prefix="/posts", tags=["posts"])
 
 
+def _get_libpq_url() -> str:
+    """Convert SQLAlchemy async URL to standard libpq format for AsyncPostgresSaver.
+
+    AsyncPostgresSaver.from_conn_string() expects standard PostgreSQL libpq format,
+    not SQLAlchemy driver-prefixed URLs.
+    """
+    url = settings.DATABASE_URL
+    # Remove SQLAlchemy driver prefixes to get standard postgres:// format
+    url = url.replace("postgresql+psycopg_async://", "postgresql://")
+    url = url.replace("postgresql+psycopg://", "postgresql://")
+    return url
+
+
 async def run_agent(post_id: int, topic: str):
     """Background task to run the agent and generate initial draft.
 
@@ -22,8 +35,11 @@ async def run_agent(post_id: int, topic: str):
     Creates fresh database and checkpointer instances within this task.
     """
     try:
+        # Clean DATABASE_URL for libpq format (remove SQLAlchemy driver prefix)
+        libpq_url = _get_libpq_url()
+
         # Open checkpointer connection and keep it open during graph execution
-        async with AsyncPostgresSaver.from_conn_string(settings.DATABASE_URL) as checkpointer:
+        async with AsyncPostgresSaver.from_conn_string(libpq_url) as checkpointer:
             # Create fresh database session inside the task
             session_maker = get_session_maker()
             async with session_maker() as db:
@@ -78,8 +94,11 @@ async def resume_agent(post_id: int, feedback: str, status: str):
     Creates fresh database and checkpointer instances within this task.
     """
     try:
+        # Clean DATABASE_URL for libpq format (remove SQLAlchemy driver prefix)
+        libpq_url = _get_libpq_url()
+
         # Open checkpointer connection and keep it open during graph execution
-        async with AsyncPostgresSaver.from_conn_string(settings.DATABASE_URL) as checkpointer:
+        async with AsyncPostgresSaver.from_conn_string(libpq_url) as checkpointer:
             # Create fresh database session inside the task
             session_maker = get_session_maker()
             async with session_maker() as db:
