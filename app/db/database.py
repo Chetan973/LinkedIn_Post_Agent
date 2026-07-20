@@ -43,5 +43,6 @@ async def init_db() -> None:
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """Provide a database session for dependency injection."""
-    async with get_session_maker() as session:
+    session_maker = get_session_maker()
+    async with session_maker() as session:
         yield session
