@@ -40,6 +40,9 @@ async def run_agent(post_id: int, topic: str):
 
         # Open checkpointer connection and keep it open during graph execution
         async with AsyncPostgresSaver.from_conn_string(libpq_url) as checkpointer:
+            # Set up LangGraph checkpoint tables in Supabase if they don't exist
+            await checkpointer.setup()
+
             # Create fresh database session inside the task
             session_maker = get_session_maker()
             async with session_maker() as db:
@@ -99,6 +102,9 @@ async def resume_agent(post_id: int, feedback: str, status: str):
 
         # Open checkpointer connection and keep it open during graph execution
         async with AsyncPostgresSaver.from_conn_string(libpq_url) as checkpointer:
+            # Set up LangGraph checkpoint tables in Supabase if they don't exist
+            await checkpointer.setup()
+
             # Create fresh database session inside the task
             session_maker = get_session_maker()
             async with session_maker() as db:
