@@ -3,6 +3,7 @@ import os
 import sys
 import selectors
 from logging.config import fileConfig
+from dotenv import load_dotenv
 
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
@@ -10,6 +11,9 @@ from sqlalchemy.ext.asyncio import async_engine_from_config, create_async_engine
 
 from alembic import context
 from app.db.models import Base
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Fix for Windows async event loop compatibility with psycopg
 if sys.platform == "win32":
