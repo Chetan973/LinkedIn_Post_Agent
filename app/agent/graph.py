@@ -1,19 +1,29 @@
+from typing import Optional
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.postgres import AsyncPostgresSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from app.core.config import settings
 from app.agent.state import AgentState
 from app.agent.nodes import draft_post, revise_post
 from app.agent.edges import route_post_state
 
 
-async def get_graph():
-    """Create and compile the LinkedIn content agent graph with PostgreSQL checkpointing.
+def get_agent_graph(checkpointer: Optional[AsyncPostgresSaver] = None):
+    """Create and compile the LinkedIn content agent graph.
+
+    This is a factory function that builds the StateGraph with optional
+    dynamic checkpointer injection. It includes human-in-the-loop interrupts
+    to pause before revision nodes for user approval.
+
+    Args:
+        checkpointer: Optional AsyncPostgresSaver for state persistence.
+                     If None, creates one from DATABASE_URL.
 
     Returns:
-        Compiled StateGraph with AsyncPostgresSaver for state persistence in Supabase.
+        Compiled StateGraph with human-in-the-loop interrupts enabled.
     """
-    # Initialize checkpoint saver for Supabase
-    saver = AsyncPostgresSaver(settings.DATABASE_URL)
+    # Initialize checkpoint saver if not provided
+    if checkpointer is None:
+        checkpointer = AsyncPostgresSaver(settings.DATABASE_URL)
 
     # Create the state graph
     graph = StateGraph(AgentState)
@@ -46,22 +56,29 @@ async def get_graph():
         },
     )
 
-    # Compile with AsyncPostgresSaver for secure checkpointing in Supabase
-    compiled_graph = graph.compile(checkpointer=saver)
+    # Compile with checkpointer and human-in-the-loop interrupts
+    # interrupt_before pauses BEFORE executing revise_post node
+    # This ensures user can review the draft before any revisions are applied
+    compiled_graph = graph.compile(
+        checkpointer=checkpointer,
+        interrupt_before=["revise_post"],
+    )
 
     return compiled_graph
 
 
-def get_graph_sync():
+# Backward compatibility aliases
+async def get_graph(checkpointer: Optional[AsyncPostgresSaver] = None):
+    """Async wrapper for get_agent_graph.
+
+    For compatibility with async contexts and existing code.
+    """
+    return get_agent_graph(checkpointer=checkpointer)
+
+
+def get_graph_sync(checkpointer: Optional[AsyncPostgresSaver] = None):
     """Synchronous wrapper to get the compiled graph.
 
-    Note: For async contexts, use `await get_graph()` directly.
-    This is provided for compatibility with sync contexts.
+    For compatibility with sync contexts or testing.
     """
-    import asyncio
-
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(get_graph())
-    finally:
-        loop.close()
+    return get_agent_graph(checkpointer=checkpointer)

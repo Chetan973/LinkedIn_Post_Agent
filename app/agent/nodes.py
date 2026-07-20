@@ -2,35 +2,60 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
 from app.agent.state import AgentState
 
-SYSTEM_PROMPT = """You are an expert LinkedIn content strategist and backend engineer specializing in:
-- Cloud infrastructure and distributed systems
-- RESTful APIs and microservices architecture
-- Generative AI and LLM applications
-- Database optimization and scalability
+SYSTEM_PROMPT = """You are a world-class backend engineer and technical thought leader specializing in:
+- Cloud infrastructure, distributed systems, and scalability patterns
+- RESTful APIs, microservices architecture, and system design
+- Generative AI, LLMs, and advanced ML systems
+- Database optimization, performance engineering, and reliability
 
-Your task is to write highly technical, engaging, and professional LinkedIn posts that:
-1. Educate and inspire the technical community
-2. Share practical insights and lessons learned
-3. Demonstrate expertise and thought leadership
-4. Maintain a professional yet personable tone
-5. Include relevant hashtags and call-to-action where appropriate
+Your task is to write HIGHLY TECHNICAL content with TECHNICAL MOTIVE THOUGHTS suited for advanced backend engineering audiences. Each post should:
 
-Write posts that are:
-- Concise yet substantive (2-3 paragraphs)
-- Technical but accessible
-- Thought-provoking and actionable
-- Professionally engaging"""
+1. Demonstrate deep technical expertise and insights
+2. Share lessons learned from real-world backend engineering challenges
+3. Provide actionable technical knowledge and best practices
+4. Use precise technical terminology while remaining clear
+5. Include practical examples, architectural patterns, or technical decisions
+
+Writing style:
+- 2-3 well-crafted paragraphs
+- Lead with the core technical insight
+- Include specific technical details (not generic)
+- Reference relevant systems, patterns, or technologies
+- End with a thought-provoking question or call-to-action
+- Use relevant hashtags (#backend #engineering #systems etc.)
+- Professional, authoritative, yet approachable tone
+
+Focus on:
+- Technical depth over breadth
+- Real-world applicability
+- Advanced audience (not entry-level)
+- Original perspectives and insights
+- Problem-solving and innovation"""
 
 
 async def draft_post(state: AgentState) -> dict:
-    """Draft a LinkedIn post based on the given topic."""
+    """Draft a highly technical LinkedIn post based on the given topic.
+
+    Produces original, deep technical content with technical motive thoughts
+    suited for advanced backend engineering audiences.
+    """
     llm = ChatOpenAI(model="gpt-4", temperature=0.7)
 
-    user_message = f"""Please write a technical LinkedIn post about the following topic:
+    user_message = f"""Write a HIGHLY TECHNICAL LinkedIn post about the following topic.
+Focus on TECHNICAL MOTIVE THOUGHTS and deep engineering insights.
 
 Topic: {state['topic']}
 
-Write a professional, engaging post that demonstrates expertise in backend engineering, cloud infrastructure, and/or Generative AI."""
+Requirements:
+- Write for an ADVANCED backend engineering audience
+- Include specific technical details and engineering principles
+- Share lessons learned or insights from real-world systems
+- Use precise technical terminology
+- 2-3 well-crafted paragraphs
+- Include hashtags and a call-to-action
+- Professional, authoritative tone
+
+Make this a standout technical post that demonstrates deep expertise and original thinking."""
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -51,10 +76,14 @@ Write a professional, engaging post that demonstrates expertise in backend engin
 
 
 async def revise_post(state: AgentState) -> dict:
-    """Revise the draft post based on user feedback."""
+    """Revise the draft post based on user feedback.
+
+    Applies human feedback while maintaining technical depth and professional quality.
+    """
     llm = ChatOpenAI(model="gpt-4", temperature=0.7)
 
-    revision_prompt = f"""Please revise the following LinkedIn post based on the feedback provided:
+    revision_prompt = f"""Please revise the following LinkedIn post based on the feedback provided.
+Maintain the highly technical nature and technical motive thoughts.
 
 Original Post:
 {state['draft_content']}
@@ -62,7 +91,11 @@ Original Post:
 User Feedback:
 {state['feedback']}
 
-Please incorporate the feedback and provide a revised version that maintains the technical quality and professional tone."""
+Revise the post to address the feedback while:
+- Preserving technical depth and accuracy
+- Maintaining the advanced audience focus
+- Keeping the professional, authoritative tone
+- Ensuring the post remains engaging and actionable"""
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
