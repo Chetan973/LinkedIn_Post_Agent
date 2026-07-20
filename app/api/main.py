@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.core.config import settings
 from app.db.database import init_db
+from app.api.routers import posts
 
 
 @asynccontextmanager
@@ -23,6 +24,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Include routers
+app.include_router(posts.router, prefix="/api/v1")
+
 
 @app.get("/")
 async def root():
@@ -39,7 +43,8 @@ async def health():
     """Health check endpoint."""
     return {
         "status": "ok",
-        "database": "sqlite",
+        "database": "supabase",
+        "agent": "langgraph",
     }
 
 
