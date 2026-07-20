@@ -9,7 +9,7 @@ async def get_db() -> AsyncGenerator:
 
     Yields an async SQLAlchemy session for use in endpoints.
     """
-    async with get_db_session() as session:
+    async for session in get_db_session():
         yield session
 
 
