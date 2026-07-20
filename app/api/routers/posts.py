@@ -5,10 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.api.schemas import PostGenerateRequest, PostReviewRequest, PostResponse
-from app.api.dependencies import get_db, get_checkpointer
+from app.api.dependencies import get_db
 from app.agent.graph import get_agent_graph
 from app.agent.state import AgentState
-from app.db import Post, PostStatus, get_db_session, get_session_maker
+from app.db import Post, PostStatus, get_session_maker
 from app.core.config import settings
 
 router = APIRouter(prefix="/posts", tags=["posts"])
@@ -22,39 +22,38 @@ async def run_agent(post_id: int, topic: str):
     Creates fresh database and checkpointer instances within this task.
     """
     try:
-        # Create fresh checkpointer instance inside the task
-        checkpointer = AsyncPostgresSaver.from_conn_string(settings.DATABASE_URL)
+        # Open checkpointer connection and keep it open during graph execution
+        async with AsyncPostgresSaver.from_conn_string(settings.DATABASE_URL) as checkpointer:
+            # Create fresh database session inside the task
+            session_maker = get_session_maker()
+            async with session_maker() as db:
+                # Get the compiled graph with the open checkpointer
+                graph = get_agent_graph(checkpointer=checkpointer)
 
-        # Create fresh database session inside the task
-        session_maker = get_session_maker()
-        async with session_maker() as db:
-            # Get the compiled graph with the checkpointer
-            graph = get_agent_graph(checkpointer=checkpointer)
+                # Initial state for the agent
+                initial_state = AgentState(
+                    messages=[],
+                    post_id=post_id,
+                    topic=topic,
+                    draft_content="",
+                    feedback="",
+                    status="drafting",
+                )
 
-            # Initial state for the agent
-            initial_state = AgentState(
-                messages=[],
-                post_id=post_id,
-                topic=topic,
-                draft_content="",
-                feedback="",
-                status="drafting",
-            )
+                # Configure with thread_id as post_id for checkpointing
+                config = {"configurable": {"thread_id": str(post_id)}}
 
-            # Configure with thread_id as post_id for checkpointing
-            config = {"configurable": {"thread_id": str(post_id)}}
+                # Run the agent with open checkpointer connection
+                result = await graph.ainvoke(initial_state, config=config)
 
-            # Run the agent
-            result = await graph.ainvoke(initial_state, config=config)
+                # Update the Post record with the draft
+                stmt = select(Post).where(Post.post_id == post_id)
+                db_post = (await db.execute(stmt)).scalars().first()
 
-            # Update the Post record with the draft
-            stmt = select(Post).where(Post.post_id == post_id)
-            db_post = (await db.execute(stmt)).scalars().first()
-
-            if db_post:
-                db_post.draft_content = result.get("draft_content", "")
-                db_post.status = PostStatus.PENDING_REVIEW
-                await db.commit()
+                if db_post:
+                    db_post.draft_content = result.get("draft_content", "")
+                    db_post.status = PostStatus.PENDING_REVIEW
+                    await db.commit()
 
     except Exception as e:
         # Log error and mark post as failed
@@ -79,39 +78,38 @@ async def resume_agent(post_id: int, feedback: str, status: str):
     Creates fresh database and checkpointer instances within this task.
     """
     try:
-        # Create fresh checkpointer instance inside the task
-        checkpointer = AsyncPostgresSaver.from_conn_string(settings.DATABASE_URL)
+        # Open checkpointer connection and keep it open during graph execution
+        async with AsyncPostgresSaver.from_conn_string(settings.DATABASE_URL) as checkpointer:
+            # Create fresh database session inside the task
+            session_maker = get_session_maker()
+            async with session_maker() as db:
+                # Get the compiled graph with the open checkpointer
+                graph = get_agent_graph(checkpointer=checkpointer)
 
-        # Create fresh database session inside the task
-        session_maker = get_session_maker()
-        async with session_maker() as db:
-            # Get the compiled graph with the checkpointer
-            graph = get_agent_graph(checkpointer=checkpointer)
+                # State with user feedback
+                agent_state = AgentState(
+                    messages=[],
+                    post_id=post_id,
+                    topic="",
+                    draft_content="",
+                    feedback=feedback,
+                    status=status,
+                )
 
-            # State with user feedback
-            agent_state = AgentState(
-                messages=[],
-                post_id=post_id,
-                topic="",
-                draft_content="",
-                feedback=feedback,
-                status=status,
-            )
+                # Configure with thread_id as post_id for checkpointing
+                config = {"configurable": {"thread_id": str(post_id)}}
 
-            # Configure with thread_id as post_id for checkpointing
-            config = {"configurable": {"thread_id": str(post_id)}}
+                # Resume the agent with open checkpointer connection
+                result = await graph.ainvoke(agent_state, config=config)
 
-            # Resume the agent
-            result = await graph.ainvoke(agent_state, config=config)
+                # Update the Post record
+                stmt = select(Post).where(Post.post_id == post_id)
+                db_post = (await db.execute(stmt)).scalars().first()
 
-            # Update the Post record
-            stmt = select(Post).where(Post.post_id == post_id)
-            db_post = (await db.execute(stmt)).scalars().first()
-
-            if db_post:
-                db_post.draft_content = result.get("draft_content", db_post.draft_content)
-                db_post.status = result.get("status", status)
-                await db.commit()
+                if db_post:
+                    db_post.draft_content = result.get("draft_content", db_post.draft_content)
+                    db_post.status = result.get("status", status)
+                    await db.commit()
 
     except Exception as e:
         # Log error
