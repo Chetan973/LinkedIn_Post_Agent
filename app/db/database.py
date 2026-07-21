@@ -62,7 +62,7 @@ async def get_checkpointer() -> AsyncPostgresSaver:
     global _checkpointer
     if _checkpointer is None:
         libpq_url = _get_libpq_url()
-        _checkpointer = AsyncPostgresSaver.from_conn_string(libpq_url)
+        _checkpointer = AsyncPostgresSaver(libpq_url)
         await _checkpointer.setup()
         logger.info("Checkpointer initialized and ready")
     return _checkpointer
