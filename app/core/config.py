@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     # LLM
     OPENAI_API_KEY: str = ""
 
+    # LinkedIn OAuth & Publishing
+    LINKEDIN_ACCESS_TOKEN: str = ""
+    LINKEDIN_PERSON_URN: str = ""
+
+    # Retry & Rate Limiting
+    LINKEDIN_MAX_RETRIES: int = 3
+    LINKEDIN_RETRY_BACKOFF: float = 2.0  # exponential backoff multiplier
+    LINKEDIN_POSTS_PER_DAY: int = 100  # LinkedIn rate limit
+    MAX_CONCURRENT_LLM_CALLS: int = 2  # Prevent token exhaustion
+
     class Config:
         env_file = ".env"
         case_sensitive = True

@@ -1,6 +1,13 @@
+import asyncio
+import logging
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
 from app.agent.state import AgentState
+from app.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+llm_semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_LLM_CALLS)
 
 SYSTEM_PROMPT = """You are a world-class backend engineer and technical thought leader specializing in:
 - Cloud infrastructure, distributed systems, and scalability patterns
@@ -38,10 +45,12 @@ async def draft_post(state: AgentState) -> dict:
 
     Produces original, deep technical content with technical motive thoughts
     suited for advanced backend engineering audiences.
+    Enforces max concurrent LLM calls to prevent rate limit exhaustion.
     """
-    llm = ChatOpenAI(model="gpt-4", temperature=0.7)
+    async with llm_semaphore:
+        llm = ChatOpenAI(model="gpt-4", temperature=0.7)
 
-    user_message = f"""Write a HIGHLY TECHNICAL LinkedIn post about the following topic.
+        user_message = f"""Write a HIGHLY TECHNICAL LinkedIn post about the following topic.
 Focus on TECHNICAL MOTIVE THOUGHTS and deep engineering insights.
 
 Topic: {state['topic']}
@@ -57,32 +66,39 @@ Requirements:
 
 Make this a standout technical post that demonstrates deep expertise and original thinking."""
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_message},
-    ]
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ]
 
-    response = await llm.ainvoke(messages)
-    draft_text = response.content
+        try:
+            response = await llm.ainvoke(messages)
+            draft_text = response.content
+            logger.info(f"Draft post created successfully for topic: {state['topic'][:50]}")
+        except Exception as e:
+            logger.error(f"Error drafting post for topic {state['topic']}: {str(e)}")
+            raise
 
-    return {
-        "draft_content": draft_text,
-        "messages": [
-            HumanMessage(content=user_message),
-            AIMessage(content=draft_text),
-        ],
-        "status": "drafted",
-    }
+        return {
+            "draft_content": draft_text,
+            "messages": [
+                HumanMessage(content=user_message),
+                AIMessage(content=draft_text),
+            ],
+            "status": "drafted",
+        }
 
 
 async def revise_post(state: AgentState) -> dict:
     """Revise the draft post based on user feedback.
 
     Applies human feedback while maintaining technical depth and professional quality.
+    Enforces max concurrent LLM calls to prevent rate limit exhaustion.
     """
-    llm = ChatOpenAI(model="gpt-4", temperature=0.7)
+    async with llm_semaphore:
+        llm = ChatOpenAI(model="gpt-4", temperature=0.7)
 
-    revision_prompt = f"""Please revise the following LinkedIn post based on the feedback provided.
+        revision_prompt = f"""Please revise the following LinkedIn post based on the feedback provided.
 Maintain the highly technical nature and technical motive thoughts.
 
 Original Post:
@@ -97,19 +113,24 @@ Revise the post to address the feedback while:
 - Keeping the professional, authoritative tone
 - Ensuring the post remains engaging and actionable"""
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": revision_prompt},
-    ]
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": revision_prompt},
+        ]
 
-    response = await llm.ainvoke(messages)
-    revised_text = response.content
+        try:
+            response = await llm.ainvoke(messages)
+            revised_text = response.content
+            logger.info("Post revision completed successfully")
+        except Exception as e:
+            logger.error(f"Error revising post: {str(e)}")
+            raise
 
-    return {
-        "draft_content": revised_text,
-        "messages": [
-            HumanMessage(content=revision_prompt),
-            AIMessage(content=revised_text),
-        ],
-        "status": "revised",
-    }
+        return {
+            "draft_content": revised_text,
+            "messages": [
+                HumanMessage(content=revision_prompt),
+                AIMessage(content=revised_text),
+            ],
+            "status": "revised",
+        }

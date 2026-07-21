@@ -1,4 +1,5 @@
 from typing import Optional
+from langgraph import graph
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from app.core.config import settings
@@ -59,10 +60,19 @@ def get_agent_graph(checkpointer: Optional[AsyncPostgresSaver] = None):
     # Compile with checkpointer and human-in-the-loop interrupts
     # interrupt_before pauses BEFORE executing revise_post node
     # This ensures user can review the draft before any revisions are applied
-    compiled_graph = graph.compile(
-        checkpointer=checkpointer,
-        interrupt_before=["revise_post"],
-    )
+    
+    # compiled_graph = graph.compile(
+    #     checkpointer=checkpointer,
+    #     interrupt_before=["revise_post"],
+    # )
+
+    # # Before (with pause):
+    # compiled_graph = graph.compile(
+    #     checkpointer=checkpointer, 
+    #     interrupt_after=["draft_post", "revise_post"])
+
+    # After (fully automated, no human review pause):
+    compiled_graph = graph.compile(checkpointer=checkpointer)
 
     return compiled_graph
 

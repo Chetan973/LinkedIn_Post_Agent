@@ -1,92 +1,129 @@
+import logging
 from typing import Annotated
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
+from app.Services.linkedin import publish_to_linkedin, LinkedInRateLimitError
 from app.api.schemas import PostGenerateRequest, PostReviewRequest, PostResponse
 from app.api.dependencies import get_db
 from app.agent.graph import get_agent_graph
 from app.agent.state import AgentState
-from app.db import Post, PostStatus, get_session_maker
-from app.core.config import settings
+from app.db import Post, PostStatus, get_session_maker, get_checkpointer
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/posts", tags=["posts"])
 
 
-def _get_libpq_url() -> str:
-    """Convert SQLAlchemy async URL to standard libpq format for AsyncPostgresSaver.
-
-    AsyncPostgresSaver.from_conn_string() expects standard PostgreSQL libpq format,
-    not SQLAlchemy driver-prefixed URLs.
-    """
-    url = settings.DATABASE_URL
-    # Remove SQLAlchemy driver prefixes to get standard postgres:// format
-    url = url.replace("postgresql+psycopg_async://", "postgresql://")
-    url = url.replace("postgresql+psycopg://", "postgresql://")
-    return url
-
-
 async def run_agent(post_id: int, topic: str):
-    """Background task to run the agent and generate initial draft.
+    """Background task to run the LinkedIn post agent fully automated.
 
-    Executes the LangGraph agent starting from draft_post node,
-    updates the Post record with the generated draft content.
-    Creates fresh database and checkpointer instances within this task.
+    Executes the LangGraph agent, generates the post content, automatically
+    publishes it to your LinkedIn profile, and updates the database status.
+    Separates concerns: save draft → publish → update status.
     """
+    session_maker = get_session_maker()
+    draft_content = ""
+
     try:
-        # Clean DATABASE_URL for libpq format (remove SQLAlchemy driver prefix)
-        libpq_url = _get_libpq_url()
+        logger.info(f"Starting agent for post {post_id} with topic: {topic[:50]}")
 
-        # Open checkpointer connection and keep it open during graph execution
-        async with AsyncPostgresSaver.from_conn_string(libpq_url) as checkpointer:
-            # Set up LangGraph checkpoint tables in Supabase if they don't exist
-            await checkpointer.setup()
+        # Get the singleton checkpointer (created at app startup)
+        checkpointer = await get_checkpointer()
 
-            # Create fresh database session inside the task
-            session_maker = get_session_maker()
+        # Initial state for the agent
+        initial_state = AgentState(
+            messages=[],
+            post_id=post_id,
+            topic=topic,
+            draft_content="",
+            feedback="",
+            status="drafting",
+        )
+
+        # Configure with thread_id as post_id for checkpointing
+        config = {"configurable": {"thread_id": str(post_id)}}
+
+        # Get the compiled graph with the singleton checkpointer
+        graph = get_agent_graph(checkpointer=checkpointer)
+
+        # Run the agent end-to-end automatically
+        result = await graph.ainvoke(initial_state, config=config)
+        draft_content = result.get("draft_content", "")
+
+        if not draft_content:
+            logger.error(f"Agent produced no draft content for post {post_id}")
             async with session_maker() as db:
-                # Get the compiled graph with the open checkpointer
-                graph = get_agent_graph(checkpointer=checkpointer)
-
-                # Initial state for the agent
-                initial_state = AgentState(
-                    messages=[],
-                    post_id=post_id,
-                    topic=topic,
-                    draft_content="",
-                    feedback="",
-                    status="drafting",
-                )
-
-                # Configure with thread_id as post_id for checkpointing
-                config = {"configurable": {"thread_id": str(post_id)}}
-
-                # Run the agent with open checkpointer connection
-                result = await graph.ainvoke(initial_state, config=config)
-
-                # Update the Post record with the draft
                 stmt = select(Post).where(Post.post_id == post_id)
                 db_post = (await db.execute(stmt)).scalars().first()
-
                 if db_post:
-                    db_post.draft_content = result.get("draft_content", "")
-                    db_post.status = PostStatus.PENDING_REVIEW
+                    db_post.status = PostStatus.DRAFTING.value
+                    db_post.error_reason = "Agent failed to generate content"
+                    await db.commit()
+            return
+
+        # Step 1: Save draft content FIRST (separate transaction)
+        async with session_maker() as db:
+            stmt = select(Post).where(Post.post_id == post_id)
+            db_post = (await db.execute(stmt)).scalars().first()
+            if db_post:
+                db_post.draft_content = draft_content
+                await db.commit()
+                logger.info(f"Draft content saved for post {post_id}")
+
+        # Step 2: Publish to LinkedIn independently
+        try:
+            result = await publish_to_linkedin(draft_content)
+            linkedin_post_id = result.get("linkedin_post_id")
+            logger.info(f"Post {post_id} successfully published to LinkedIn with ID {linkedin_post_id}")
+
+            # Step 3: Update DB with LinkedIn post ID and success status
+            async with session_maker() as db:
+                stmt = select(Post).where(Post.post_id == post_id)
+                db_post = (await db.execute(stmt)).scalars().first()
+                if db_post:
+                    db_post.status = PostStatus.PUBLISHED.value
+                    db_post.final_content = draft_content
+                    db_post.linkedin_post_id = linkedin_post_id
+                    db_post.published_at = datetime.now(timezone.utc)
+                    db_post.error_reason = None
+                    await db.commit()
+                    logger.info(f"Post {post_id} marked as published in DB")
+
+        except LinkedInRateLimitError as e:
+            logger.warning(f"Rate limit error for post {post_id}: {str(e)}")
+            async with session_maker() as db:
+                stmt = select(Post).where(Post.post_id == post_id)
+                db_post = (await db.execute(stmt)).scalars().first()
+                if db_post:
+                    db_post.status = "retry_scheduled"
+                    db_post.error_reason = f"Rate limited: {str(e)}"
+                    await db.commit()
+
+        except Exception as pub_error:
+            logger.error(f"Failed to publish post {post_id} to LinkedIn: {str(pub_error)}")
+            async with session_maker() as db:
+                stmt = select(Post).where(Post.post_id == post_id)
+                db_post = (await db.execute(stmt)).scalars().first()
+                if db_post:
+                    db_post.status = "failed_publish"
+                    db_post.error_reason = str(pub_error)
                     await db.commit()
 
     except Exception as e:
-        # Log error and mark post as failed
-        print(f"Error running agent for post {post_id}: {str(e)}")
+        logger.error(f"Error running agent for post {post_id}: {str(e)}", exc_info=True)
         try:
-            session_maker = get_session_maker()
             async with session_maker() as db:
                 stmt = select(Post).where(Post.post_id == post_id)
                 db_post = (await db.execute(stmt)).scalars().first()
                 if db_post:
-                    db_post.status = "error"
+                    db_post.status = "failed_draft"
+                    db_post.error_reason = str(e)
                     await db.commit()
         except Exception as db_error:
-            print(f"Error updating error status for post {post_id}: {str(db_error)}")
+            logger.error(f"Error updating error status for post {post_id}: {str(db_error)}")
 
 
 async def resume_agent(post_id: int, feedback: str, status: str):
@@ -94,51 +131,48 @@ async def resume_agent(post_id: int, feedback: str, status: str):
 
     Continues the LangGraph agent execution from where it paused,
     applies user feedback and updates the Post record.
-    Creates fresh database and checkpointer instances within this task.
     """
+    session_maker = get_session_maker()
+
     try:
-        # Clean DATABASE_URL for libpq format (remove SQLAlchemy driver prefix)
-        libpq_url = _get_libpq_url()
+        logger.info(f"Resuming agent for post {post_id} with status: {status}")
 
-        # Open checkpointer connection and keep it open during graph execution
-        async with AsyncPostgresSaver.from_conn_string(libpq_url) as checkpointer:
-            # Set up LangGraph checkpoint tables in Supabase if they don't exist
-            await checkpointer.setup()
+        # Get the singleton checkpointer
+        checkpointer = await get_checkpointer()
 
-            # Create fresh database session inside the task
-            session_maker = get_session_maker()
-            async with session_maker() as db:
-                # Get the compiled graph with the open checkpointer
-                graph = get_agent_graph(checkpointer=checkpointer)
+        # State with user feedback
+        agent_state = AgentState(
+            messages=[],
+            post_id=post_id,
+            topic="",
+            draft_content="",
+            feedback=feedback,
+            status=status,
+        )
 
-                # State with user feedback
-                agent_state = AgentState(
-                    messages=[],
-                    post_id=post_id,
-                    topic="",
-                    draft_content="",
-                    feedback=feedback,
-                    status=status,
-                )
+        # Configure with thread_id as post_id for checkpointing
+        config = {"configurable": {"thread_id": str(post_id)}}
 
-                # Configure with thread_id as post_id for checkpointing
-                config = {"configurable": {"thread_id": str(post_id)}}
+        # Get the compiled graph with the singleton checkpointer
+        graph = get_agent_graph(checkpointer=checkpointer)
 
-                # Resume the agent with open checkpointer connection
-                result = await graph.ainvoke(agent_state, config=config)
+        # Resume the agent with open checkpointer connection
+        result = await graph.ainvoke(agent_state, config=config)
+        draft_content = result.get("draft_content", "")
 
-                # Update the Post record
-                stmt = select(Post).where(Post.post_id == post_id)
-                db_post = (await db.execute(stmt)).scalars().first()
+        # Update the Post record
+        async with session_maker() as db:
+            stmt = select(Post).where(Post.post_id == post_id)
+            db_post = (await db.execute(stmt)).scalars().first()
 
-                if db_post:
-                    db_post.draft_content = result.get("draft_content", db_post.draft_content)
-                    db_post.status = result.get("status", status)
-                    await db.commit()
+            if db_post and draft_content:
+                db_post.draft_content = draft_content
+                db_post.status = result.get("status", status)
+                await db.commit()
+                logger.info(f"Post {post_id} resumed and updated")
 
     except Exception as e:
-        # Log error
-        print(f"Error resuming agent for post {post_id}: {str(e)}")
+        logger.error(f"Error resuming agent for post {post_id}: {str(e)}", exc_info=True)
 
 
 @router.post("/generate", status_code=status.HTTP_202_ACCEPTED)
@@ -151,21 +185,37 @@ async def generate_post(
 
     Creates a Post record in the database and asynchronously runs the LangGraph
     agent to generate the initial draft. Returns immediately with 202 Accepted.
-    Background task creates its own database and checkpointer instances.
+
+    Idempotency: If an idempotency_key is provided and a post with that key
+    already exists, returns the existing post without creating a duplicate.
     """
+    # Check for idempotency if key is provided
+    if request.idempotency_key:
+        stmt = select(Post).where(Post.idempotency_key == request.idempotency_key)
+        existing_post = (await db.execute(stmt)).scalars().first()
+        if existing_post:
+            logger.info(f"Duplicate post request detected. Returning existing post {existing_post.post_id}")
+            return {
+                "post_id": existing_post.post_id,
+                "status": existing_post.status,
+                "message": "Post already queued or processing",
+            }
+
     # Create new Post record
     post = Post(
         topic=request.topic,
         draft_content="",
         status=PostStatus.DRAFTING,
         user_id=1,  # TODO: Get from authenticated user
+        idempotency_key=request.idempotency_key,
     )
     db.add(post)
     await db.commit()
     await db.refresh(post)
 
+    logger.info(f"Created post {post.post_id} for topic: {request.topic[:50]}")
+
     # Add background task to run agent
-    # Task will create its own database session and checkpointer
     background_tasks.add_task(run_agent, post.post_id, request.topic)
 
     return {

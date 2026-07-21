@@ -3,18 +3,25 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.core.config import settings
-from app.db.database import init_db
+from app.db.database import init_db, get_checkpointer, close_checkpointer
 from app.api.routers import posts
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager for startup and shutdown."""
-    # Startup: Initialize database
+    # Startup: Initialize database and checkpointer
     await init_db()
     print("[OK] Database initialized")
+
+    await get_checkpointer()
+    print("[OK] LangGraph checkpointer initialized")
+
     yield
-    # Shutdown: Cleanup if needed
+
+    # Shutdown: Close checkpointer and cleanup
+    await close_checkpointer()
+    print("[OK] LangGraph checkpointer closed")
     print("[OK] Application shutting down")
 
 
