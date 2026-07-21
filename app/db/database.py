@@ -53,31 +53,26 @@ def get_session_maker() -> async_sessionmaker:
     return _session_maker
 
 
-async def get_checkpointer() -> AsyncPostgresSaver:
-    """Get or create singleton AsyncPostgresSaver for LangGraph state persistence.
+def get_checkpointer_factory():
+    """Get factory function for creating AsyncPostgresSaver instances.
 
-    Reuses the same checkpointer across all background tasks to avoid
-    connection pool exhaustion. Checkpointer is initialized once at app startup.
+    Returns a callable that creates checkpointers with the correct libpq URL.
+    This is used by background tasks to create checkpointers efficiently.
     """
-    global _checkpointer
-    if _checkpointer is None:
-        libpq_url = _get_libpq_url()
-        _checkpointer = AsyncPostgresSaver(libpq_url)
-        await _checkpointer.setup()
-        logger.info("Checkpointer initialized and ready")
-    return _checkpointer
+    libpq_url = _get_libpq_url()
+
+    async def create_checkpointer():
+        """Create and setup AsyncPostgresSaver for this task."""
+        checkpointer = AsyncPostgresSaver.from_conn_string(libpq_url)
+        # from_conn_string() returns context manager, use directly in tasks
+        return checkpointer
+
+    return create_checkpointer
 
 
 async def close_checkpointer() -> None:
-    """Close the singleton checkpointer connection on app shutdown."""
-    global _checkpointer
-    if _checkpointer is not None:
-        try:
-            await _checkpointer.aclose()
-            _checkpointer = None
-            logger.info("Checkpointer closed")
-        except Exception as e:
-            logger.error(f"Error closing checkpointer: {str(e)}")
+    """No-op for backward compatibility."""
+    logger.info("Checkpointer cleanup (no singleton to close)")
 
 
 async def init_db() -> None:

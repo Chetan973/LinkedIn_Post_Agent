@@ -10,7 +10,9 @@ from app.api.schemas import PostGenerateRequest, PostReviewRequest, PostResponse
 from app.api.dependencies import get_db
 from app.agent.graph import get_agent_graph
 from app.agent.state import AgentState
-from app.db import Post, PostStatus, get_session_maker, get_checkpointer
+from app.db import Post, PostStatus, get_session_maker
+from app.db.database import _get_libpq_url
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 logger = logging.getLogger(__name__)
 
@@ -30,29 +32,30 @@ async def run_agent(post_id: int, topic: str):
     try:
         logger.info(f"Starting agent for post {post_id} with topic: {topic[:50]}")
 
-        # Get the singleton checkpointer (created at app startup)
-        checkpointer = await get_checkpointer()
+        # Get checkpointer via context manager for this task
+        libpq_url = _get_libpq_url()
+        async with AsyncPostgresSaver.from_conn_string(libpq_url) as checkpointer:
+            # Initial state for the agent
+            initial_state = AgentState(
+                messages=[],
+                post_id=post_id,
+                topic=topic,
+                draft_content="",
+                feedback="",
+                status="drafting",
+            )
 
-        # Initial state for the agent
-        initial_state = AgentState(
-            messages=[],
-            post_id=post_id,
-            topic=topic,
-            draft_content="",
-            feedback="",
-            status="drafting",
-        )
+            # Configure with thread_id as post_id for checkpointing
+            config = {"configurable": {"thread_id": str(post_id)}}
 
-        # Configure with thread_id as post_id for checkpointing
-        config = {"configurable": {"thread_id": str(post_id)}}
+            # Get the compiled graph with the checkpointer
+            graph = get_agent_graph(checkpointer=checkpointer)
 
-        # Get the compiled graph with the singleton checkpointer
-        graph = get_agent_graph(checkpointer=checkpointer)
+            # Run the agent end-to-end automatically
+            result = await graph.ainvoke(initial_state, config=config)
+            draft_content = result.get("draft_content", "")
 
-        # Run the agent end-to-end automatically
-        result = await graph.ainvoke(initial_state, config=config)
-        draft_content = result.get("draft_content", "")
-
+        # Checkpointer context closes here - all remaining work is DB operations
         if not draft_content:
             logger.error(f"Agent produced no draft content for post {post_id}")
             async with session_maker() as db:
@@ -137,28 +140,28 @@ async def resume_agent(post_id: int, feedback: str, status: str):
     try:
         logger.info(f"Resuming agent for post {post_id} with status: {status}")
 
-        # Get the singleton checkpointer
-        checkpointer = await get_checkpointer()
+        # Get checkpointer via context manager for this task
+        libpq_url = _get_libpq_url()
+        async with AsyncPostgresSaver.from_conn_string(libpq_url) as checkpointer:
+            # State with user feedback
+            agent_state = AgentState(
+                messages=[],
+                post_id=post_id,
+                topic="",
+                draft_content="",
+                feedback=feedback,
+                status=status,
+            )
 
-        # State with user feedback
-        agent_state = AgentState(
-            messages=[],
-            post_id=post_id,
-            topic="",
-            draft_content="",
-            feedback=feedback,
-            status=status,
-        )
+            # Configure with thread_id as post_id for checkpointing
+            config = {"configurable": {"thread_id": str(post_id)}}
 
-        # Configure with thread_id as post_id for checkpointing
-        config = {"configurable": {"thread_id": str(post_id)}}
+            # Get the compiled graph with the checkpointer
+            graph = get_agent_graph(checkpointer=checkpointer)
 
-        # Get the compiled graph with the singleton checkpointer
-        graph = get_agent_graph(checkpointer=checkpointer)
-
-        # Resume the agent with open checkpointer connection
-        result = await graph.ainvoke(agent_state, config=config)
-        draft_content = result.get("draft_content", "")
+            # Resume the agent execution
+            result = await graph.ainvoke(agent_state, config=config)
+            draft_content = result.get("draft_content", "")
 
         # Update the Post record
         async with session_maker() as db:
