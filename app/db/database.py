@@ -37,10 +37,7 @@ def get_engine() -> AsyncEngine:
             pool_recycle=3600,               # Recycle stale connections every hour
             pool_pre_ping=True,              # Health check before reuse
             connect_args={
-                "timeout": 30,               # Connection timeout
-                "server_settings": {
-                    "application_name": "linkedin-agent",
-                }
+                "timeout": 30,               # Connection timeout (psycopg3 valid parameter)
             },
         )
     return _engine
