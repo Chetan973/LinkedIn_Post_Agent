@@ -11,10 +11,10 @@ class Base(DeclarativeBase):
 
 
 class PostStatus(str, Enum):
-    """Enum for post status."""
-    DRAFTING = "drafting"
-    PENDING_REVIEW = "pending_review"
+    """Enum for post status in fully automated workflow."""
+    QUEUED = "queued"
     PUBLISHED = "published"
+    FAILED = "failed"
 
 
 class User(Base):
@@ -24,6 +24,7 @@ class User(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     linkedin_profile_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -60,8 +61,10 @@ class Post(Base):
     topic: Mapped[str] = mapped_column(String(255), nullable=False)
     draft_content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     final_content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    status: Mapped[PostStatus] = mapped_column(
-        default=PostStatus.DRAFTING,
+    
+    status: Mapped[str] = mapped_column(
+        String,
+        default=PostStatus.QUEUED.value,
         nullable=False,
     )
     idempotency_key: Mapped[Optional[str]] = mapped_column(

@@ -86,7 +86,6 @@ Make this a standout technical post that demonstrates deep expertise and origina
                 HumanMessage(content=user_message),
                 AIMessage(content=draft_text),
             ],
-            "status": "drafted",
         }
 
 
@@ -134,5 +133,4 @@ Revise the post to address the feedback while:
                 HumanMessage(content=revision_prompt),
                 AIMessage(content=revised_text),
             ],
-            "status": "revised",
         }

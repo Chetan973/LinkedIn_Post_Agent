@@ -1,26 +1,23 @@
 from typing import Optional
-from langgraph import graph
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from app.core.config import settings
 from app.agent.state import AgentState
-from app.agent.nodes import draft_post, revise_post
-from app.agent.edges import route_post_state
+from app.agent.nodes import draft_post
 
 
 def get_agent_graph(checkpointer: Optional[AsyncPostgresSaver] = None):
     """Create and compile the LinkedIn content agent graph.
 
-    This is a factory function that builds the StateGraph with optional
-    dynamic checkpointer injection. It includes human-in-the-loop interrupts
-    to pause before revision nodes for user approval.
+    Fully automated workflow: draft_post → end
+    No human-in-the-loop, no conditional routing, no pauses.
 
     Args:
         checkpointer: Optional AsyncPostgresSaver for state persistence.
                      If None, creates one from DATABASE_URL.
 
     Returns:
-        Compiled StateGraph with human-in-the-loop interrupts enabled.
+        Compiled StateGraph for fully automated content generation.
     """
     # Initialize checkpoint saver if not provided
     if checkpointer is None:
@@ -29,49 +26,16 @@ def get_agent_graph(checkpointer: Optional[AsyncPostgresSaver] = None):
     # Create the state graph
     graph = StateGraph(AgentState)
 
-    # Add nodes
+    # Add single node for content generation
     graph.add_node("draft_post", draft_post)
-    graph.add_node("revise_post", revise_post)
 
     # Set entry point
     graph.set_entry_point("draft_post")
 
-    # Add conditional edges for routing based on status
-    graph.add_conditional_edges(
-        "draft_post",
-        route_post_state,
-        {
-            "draft_post": "draft_post",
-            "revise_post": "revise_post",
-            "__end__": END,
-        },
-    )
+    # Direct edge from draft to end (fully automated, no branching)
+    graph.add_edge("draft_post", END)
 
-    graph.add_conditional_edges(
-        "revise_post",
-        route_post_state,
-        {
-            "draft_post": "draft_post",
-            "revise_post": "revise_post",
-            "__end__": END,
-        },
-    )
-
-    # Compile with checkpointer and human-in-the-loop interrupts
-    # interrupt_before pauses BEFORE executing revise_post node
-    # This ensures user can review the draft before any revisions are applied
-    
-    # compiled_graph = graph.compile(
-    #     checkpointer=checkpointer,
-    #     interrupt_before=["revise_post"],
-    # )
-
-    # # Before (with pause):
-    # compiled_graph = graph.compile(
-    #     checkpointer=checkpointer, 
-    #     interrupt_after=["draft_post", "revise_post"])
-
-    # After (fully automated, no human review pause):
+    # Compile with checkpointer (no interrupts, fully automated)
     compiled_graph = graph.compile(checkpointer=checkpointer)
 
     return compiled_graph

@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Optional
 from pydantic import BaseModel, Field
 
 
@@ -20,22 +20,6 @@ class PostGenerateRequest(BaseModel):
         }
 
 
-class PostReviewRequest(BaseModel):
-    """Request schema for reviewing and providing feedback on a post."""
-    feedback: str = Field(..., description="User feedback on the post", min_length=1, max_length=2000)
-    status: Literal["approved", "rejected", "needs_revision"] = Field(
-        ..., description="Status of the post review"
-    )
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "feedback": "Add more details about async patterns",
-                "status": "needs_revision"
-            }
-        }
-
-
 class PostResponse(BaseModel):
     """Response schema for post data."""
     post_id: int = Field(..., description="Unique post identifier")
@@ -53,8 +37,8 @@ class PostResponse(BaseModel):
                 "post_id": 1,
                 "topic": "Building Scalable Distributed Systems",
                 "status": "published",
-                "draft_content": "When building distributed systems...",
-                "final_content": "When building distributed systems...",
+                "draft_content": "When building distributed systems, consider async patterns...",
+                "final_content": "When building distributed systems, consider async patterns...",
                 "linkedin_post_id": "7085123456789012345",
                 "error_reason": None
             }
