@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     # LLM
     OPENAI_API_KEY: str = ""
 
+    # LLM Fallback (Gemini 2.5 Flash with Ollama fallback)
+    GEMINI_API_KEY: str = ""
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL_NAME: str = "llama3"
+
     # LinkedIn OAuth & Publishing
     LINKEDIN_ACCESS_TOKEN: str = ""
     LINKEDIN_PERSON_URN: str = ""

@@ -1,9 +1,9 @@
 import asyncio
 import logging
 from langchain_core.messages import HumanMessage, AIMessage
-from langchain_openai import ChatOpenAI
 from app.agent.state import AgentState
 from app.core.config import settings
+from app.Services.llm_fallback import FallbackLLM
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +46,10 @@ async def draft_post(state: AgentState) -> dict:
     Produces original, deep technical content with technical motive thoughts
     suited for advanced backend engineering audiences.
     Enforces max concurrent LLM calls to prevent rate limit exhaustion.
+    Uses Gemini 2.5 Flash with automatic Ollama fallback.
     """
     async with llm_semaphore:
-        llm = ChatOpenAI(model="gpt-4", temperature=0.7)
+        llm = FallbackLLM(temperature=0.7)
 
         user_message = f"""Write a HIGHLY TECHNICAL LinkedIn post about the following topic.
 Focus on TECHNICAL MOTIVE THOUGHTS and deep engineering insights.
@@ -94,9 +95,10 @@ async def revise_post(state: AgentState) -> dict:
 
     Applies human feedback while maintaining technical depth and professional quality.
     Enforces max concurrent LLM calls to prevent rate limit exhaustion.
+    Uses Gemini 2.5 Flash with automatic Ollama fallback.
     """
     async with llm_semaphore:
-        llm = ChatOpenAI(model="gpt-4", temperature=0.7)
+        llm = FallbackLLM(temperature=0.7)
 
         revision_prompt = f"""Please revise the following LinkedIn post based on the feedback provided.
 Maintain the highly technical nature and technical motive thoughts.
