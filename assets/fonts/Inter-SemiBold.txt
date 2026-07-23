@@ -1,0 +1,17 @@
+FONT SETUP REQUIRED
+
+To use custom fonts, download one of these open-source fonts and save as assets/fonts/Inter-SemiBold.ttf:
+
+Option 1: Inter Font (https://github.com/rsms/inter)
+- Download Inter-SemiBold.ttf
+- Place in: assets/fonts/
+
+Option 2: Roboto Font (https://github.com/google/roboto)
+- Download Roboto-Medium.ttf
+- Rename to: Inter-SemiBold.ttf
+- Place in: assets/fonts/
+
+Option 3: Use system fonts (Segoe UI, Arial, etc.)
+- Already available on Windows
+
+If no font file is present, PIL will use its built-in bitmap font.
