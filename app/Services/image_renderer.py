@@ -1,253 +1,281 @@
-"""PIL/Pillow-based LinkedIn image rendering with template overlay.
+"""LinkedIn image renderer - supports dual branding modes.
 
-Renders LinkedIn images by overlaying text (profile header + thought) on a
-fixed template image. No external image generation services.
+Mode A - Blank Template:
+  Renderer draws profile photo, display name, designation, badge dynamically
 
-Template specs:
-- 1080×1350 pixels (portrait)
-- Black background (premium aesthetic)
-- Profile header with name, role, verification badge (top-left)
-- AI-generated thought (20-35 words, centered)
+Mode B - Pre-branded Template:
+  Renderer only draws AI-generated thought (template is immutable)
+
+Behavior determined by BrandingConfig.
 """
 
 import logging
 import io
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+from PIL import Image, ImageDraw, ImageFont
 
-try:
-    from PIL import Image, ImageDraw, ImageFont
-except ImportError:
-    raise ImportError(
-        "Pillow is required for image rendering. "
-        "Install with: pip install Pillow"
-    )
-
-from app.core.config import settings
+if TYPE_CHECKING:
+    from app.branding.config import BrandingConfig
 
 logger = logging.getLogger(__name__)
 
-# LinkedIn image specs
+# LinkedIn image specifications
 LINKEDIN_WIDTH = 1080
 LINKEDIN_HEIGHT = 1350
 
 
 class LinkedInImageRenderer:
-    """Renders LinkedIn images by overlaying text on a template."""
+    """Renders LinkedIn images with configurable branding support.
 
-    def __init__(
-        self,
-        template_path: Optional[str] = None,
-        font_path: Optional[str] = None,
-    ):
-        """Initialize renderer with template and font.
+    Supports two rendering modes:
+    - Mode A: Blank template - renders profile, name, role, badge dynamically
+    - Mode B: Pre-branded template - renders only thought (immutable template)
+
+    Behavior determined by BrandingConfig.template_type.
+    """
+
+    def __init__(self, branding_config: "BrandingConfig"):
+        """Initialize renderer with branding configuration.
 
         Args:
-            template_path: Path to base template (1080×1350). Defaults to config.
-            font_path: Path to TTF font file. Defaults to config.
+            branding_config: BrandingConfig with template and rendering instructions
 
         Raises:
-            FileNotFoundError if template or font not found
+            FileNotFoundError: If template file not found
         """
-        self.template_path = Path(template_path or settings.TEMPLATE_IMAGE_PATH)
-        self.font_path = Path(font_path or settings.FONTS_PATH) / "Inter_18pt-SemiBold.ttf"
+        self.config = branding_config
+        self.template_path = Path(branding_config.template_path)
+
+        logger.info(f"Initializing renderer: {self.config}")
 
         if not self.template_path.exists():
-            logger.warning(
-                f"Template not found: {self.template_path}. "
-                f"Will create solid black image instead."
-            )
-            self.template_path = None
-        else:
-            logger.info(f"Using template: {self.template_path}")
+            raise FileNotFoundError(f"Template not found: {self.template_path}")
 
-        if not self.font_path.exists():
-            logger.warning(f"Font not found: {self.font_path}. Will use default font.")
-            self.font_path = None
+        logger.info(f"Template loaded: {self.template_path} (type={branding_config.template_type})")
 
     def render(
         self,
         thought: str,
         profile_name: Optional[str] = None,
         profile_role: Optional[str] = None,
+        font_path: Optional[str] = None,
         save_path: Optional[str] = None,
     ) -> bytes:
-        """Render image with thought overlay.
+        """Render LinkedIn image based on branding configuration.
+
+        Rendering behavior determined by BrandingConfig:
+        - If template_type="blank": Renders profile elements + thought
+        - If template_type="prebranded": Renders thought only
 
         Args:
-            thought: AI-generated thought (20-35 words, plain text)
-            profile_name: Name for header (defaults to config)
-            profile_role: Role/title for header (defaults to config)
+            thought: AI-generated thought (8-12 words, one sentence)
+            profile_name: Display name (used only if config.draw_name=True)
+            profile_role: Designation/headline (used only if config.draw_role=True)
+            font_path: Optional path to TTF font
             save_path: Optional path to save PNG locally
 
         Returns:
             PNG image bytes ready for LinkedIn upload
 
         Raises:
-            Exception: If image rendering or encoding fails
+            Exception: If rendering fails
         """
         try:
-            profile_name = profile_name or settings.PROFILE_NAME
-            profile_role = profile_role or settings.PROFILE_ROLE
+            logger.debug(f"Starting render (mode={self.config.template_type}): {thought[:50]}...")
 
-            logger.debug(f"Starting image render with thought: {thought[:50]}...")
+            # Step 1: Load template
+            img = Image.open(self.template_path).convert("RGB")
+            logger.debug(f"Template loaded: {img.size}")
 
-            # Load or create template
-            if self.template_path and self.template_path.exists():
-                logger.debug(f"Loading template from: {self.template_path}")
-                img = Image.open(self.template_path).convert("RGB")
-            else:
-                # Fallback: solid black background
-                logger.warning("Template not found, creating solid black background image")
-                img = Image.new("RGB", (LINKEDIN_WIDTH, LINKEDIN_HEIGHT), color=(0, 0, 0))
-
+            # Step 2: Prepare for text rendering
             draw = ImageDraw.Draw(img)
 
-            # Load fonts (with fallback to default)
-            name_font = ImageFont.load_default()
-            role_font = ImageFont.load_default()
-            thought_font = ImageFont.load_default()
+            # Load fonts (with fallback)
+            fonts = self._load_fonts(font_path)
 
-            if self.font_path and self.font_path.exists():
-                try:
-                    name_font = ImageFont.truetype(str(self.font_path), size=36)
-                    role_font = ImageFont.truetype(str(self.font_path), size=24)
-                    thought_font = ImageFont.truetype(str(self.font_path), size=32)
-                    logger.debug(f"Loaded TTF font: {self.font_path}")
-                except (OSError, IOError) as e:
-                    logger.warning(f"Could not load TTF font ({str(e)}). Using default PIL font.")
+            # Step 3: Render based on template type
+            if self.config.template_type == "blank":
+                # Mode A: Draw all elements
+                logger.debug("Mode A: Rendering blank template with profile elements")
+                if self.config.draw_profile:
+                    logger.debug("Drawing profile photo placeholder")
+                if self.config.draw_name and profile_name:
+                    self._render_text(draw, profile_name, fonts["name"], "top-left")
+                if self.config.draw_role and profile_role:
+                    self._render_text(draw, profile_role, fonts["role"], "below-name")
+                if self.config.draw_badge:
+                    self._render_badge(draw, 50, 50, fonts["role"])
+                self._render_thought_centered(draw, thought, fonts["thought"])
+            else:
+                # Mode B: Draw thought only (template is immutable)
+                logger.debug("Mode B: Rendering pre-branded template (thought only)")
+                self._render_thought_centered(draw, thought, fonts["thought"])
 
-            # 1. Draw profile header (top-left)
-            try:
-                logger.debug("Drawing profile header...")
-                self._draw_header(draw, profile_name, profile_role, name_font, role_font)
-            except Exception as header_err:
-                logger.error(f"Failed to draw profile header: {str(header_err)}", exc_info=True)
-                raise
-
-            # 2. Draw thought (centered, with wrapping)
-            try:
-                logger.debug("Drawing thought text...")
-                self._draw_thought(draw, thought, thought_font)
-            except Exception as thought_err:
-                logger.error(f"Failed to draw thought: {str(thought_err)}", exc_info=True)
-                raise
-
-            # Save if requested
+            # Step 4: Save if requested
             if save_path:
                 try:
                     img.save(save_path, "PNG", quality=95)
-                    logger.info(f"Image saved to {save_path}")
-                except Exception as save_err:
-                    logger.error(f"Failed to save image to {save_path}: {str(save_err)}", exc_info=True)
+                    logger.info(f"Image saved: {save_path}")
+                except Exception as e:
+                    logger.error(f"Failed to save image: {str(e)}")
                     raise
 
-            # Return bytes
-            try:
-                logger.debug("Encoding image to PNG bytes...")
-                buffer = io.BytesIO()
-                img.save(buffer, format="PNG", quality=95)
-                buffer.seek(0)
-                image_bytes = buffer.getvalue()
-                logger.debug(f"Image encoded successfully: {len(image_bytes)} bytes")
-                return image_bytes
-            except Exception as encode_err:
-                logger.error(f"Failed to encode image to bytes: {str(encode_err)}", exc_info=True)
-                raise
+            # Step 5: Return PNG bytes
+            buffer = io.BytesIO()
+            img.save(buffer, format="PNG", quality=95)
+            buffer.seek(0)
+            image_bytes = buffer.getvalue()
+
+            logger.info(f"Image rendered: {len(image_bytes)} bytes")
+            return image_bytes
 
         except Exception as e:
-            logger.error(f"Image rendering failed: {str(e)}", exc_info=True)
+            logger.error(f"Rendering failed: {str(e)}", exc_info=True)
             raise
 
-    def _draw_header(
+    def _load_fonts(self, font_path: Optional[str]) -> dict:
+        """Load all required fonts with fallbacks.
+
+        Args:
+            font_path: Optional path to TTF font file
+
+        Returns:
+            Dictionary with fonts for different purposes
+        """
+        default_font = ImageFont.load_default()
+        fonts = {
+            "name": default_font,
+            "role": default_font,
+            "thought": default_font,
+        }
+
+        if font_path:
+            font_path_obj = Path(font_path)
+            if font_path_obj.exists():
+                try:
+                    fonts["name"] = ImageFont.truetype(str(font_path_obj), size=36)
+                    fonts["role"] = ImageFont.truetype(str(font_path_obj), size=24)
+                    fonts["thought"] = ImageFont.truetype(str(font_path_obj), size=32)
+                    logger.debug(f"Loaded TTF font: {font_path}")
+                except (OSError, IOError) as e:
+                    logger.warning(f"Could not load font: {str(e)}. Using default.")
+            else:
+                logger.warning(f"Font not found: {font_path}. Using default.")
+
+        return fonts
+
+    def _render_text(
         self,
         draw: ImageDraw.ImageDraw,
-        name: str,
-        role: str,
-        name_font: ImageFont.FreeTypeFont,
-        role_font: ImageFont.FreeTypeFont,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        position: str,
     ) -> None:
-        """Draw profile header in top-left corner.
+        """Render text at specified position.
 
         Args:
             draw: PIL ImageDraw object
-            name: Profile name
-            role: Profile role/designation
-            name_font: Font for name (larger)
-            role_font: Font for role (smaller)
+            text: Text to render
+            font: Font for rendering
+            position: "top-left", "below-name", or "center"
         """
-        x, y = 50, 50
-        text_color = (255, 255, 255)  # White
-        secondary_color = (180, 180, 180)  # Gray
+        white = (255, 255, 255)
 
-        # Draw name
-        draw.text((x, y), name, font=name_font, fill=text_color)
+        if position == "top-left":
+            draw.text((50, 50), text, font=font, fill=white)
+        elif position == "below-name":
+            draw.text((50, 95), text, font=font, fill=white)
+        elif position == "center":
+            self._render_thought_centered(draw, text, font)
 
-        # Draw role below name
-        draw.text((x, y + 45), role, font=role_font, fill=secondary_color)
+    def _render_badge(
+        self,
+        draw: ImageDraw.ImageDraw,
+        name_x: int,
+        name_y: int,
+        role_font: ImageFont.FreeTypeFont,
+    ) -> None:
+        """Draw verification badge next to display name.
 
-        # Optional: Draw verification badge (small circle with checkmark)
+        Args:
+            draw: PIL ImageDraw object
+            name_x: X position of profile name
+            name_y: Y position of profile name
+            role_font: Font for checkmark (uses smaller font)
+        """
         try:
-            badge_x, badge_y = x + 300, y - 5
+            badge_x = name_x + 300
+            badge_y = name_y - 5
             badge_radius = 15
             badge_color = (0, 120, 215)  # LinkedIn blue
+            white = (255, 255, 255)
+
+            # Draw blue circle
             draw.ellipse(
                 [
                     (badge_x - badge_radius, badge_y - badge_radius),
                     (badge_x + badge_radius, badge_y + badge_radius),
                 ],
                 fill=badge_color,
-                outline=(255, 255, 255),
+                outline=white,
                 width=2,
             )
-            # Draw checkmark
-            draw.text(
-                (badge_x - 6, badge_y - 10), "✓", font=role_font, fill=(255, 255, 255)
-            )
-        except Exception as e:
-            logger.debug(f"Could not draw badge: {str(e)}")
 
-    def _draw_thought(
+            # Draw white checkmark
+            draw.text(
+                (badge_x - 6, badge_y - 10), "✓", font=role_font, fill=white
+            )
+
+            logger.debug(f"Badge rendered at ({badge_x}, {badge_y})")
+
+        except Exception as e:
+            logger.warning(f"Could not draw badge: {str(e)}")
+
+    def _render_thought_centered(
         self,
         draw: ImageDraw.ImageDraw,
         thought: str,
         font: ImageFont.FreeTypeFont,
     ) -> None:
-        """Draw thought text centered on image.
+        """Render thought text centered on image.
+
+        Supports up to 3 lines, center-aligned, white text.
 
         Args:
             draw: PIL ImageDraw object
-            thought: Thought text (20-35 words)
-            font: Font for thought
+            thought: Thought text
+            font: Font for rendering
         """
-        # Wrap text to fit within image width
-        wrapped_lines = self._wrap_text(thought, max_width=900)
+        wrapped_lines = self._wrap_text(thought, max_lines=3)
 
         # Calculate vertical position (center of image)
-        total_height = len(wrapped_lines) * 50  # Approximate line height
+        line_height = 50
+        total_height = len(wrapped_lines) * line_height
         start_y = (LINKEDIN_HEIGHT - total_height) // 2
 
+        # White text color
+        text_color = (255, 255, 255)
+
         # Draw each line centered
-        text_color = (255, 255, 255)  # White
         for i, line in enumerate(wrapped_lines):
-            # Get text width to center it
             bbox = draw.textbbox((0, 0), line, font=font)
             text_width = bbox[2] - bbox[0]
-            x = (LINKEDIN_WIDTH - text_width) // 2
 
-            y = start_y + (i * 50)
+            x = (LINKEDIN_WIDTH - text_width) // 2
+            y = start_y + (i * line_height)
+
             draw.text((x, y), line, font=font, fill=text_color)
 
-        logger.info(f"Drew {len(wrapped_lines)} lines of thought")
+        logger.info(f"Rendered thought ({len(wrapped_lines)} lines, white text)")
 
-    def _wrap_text(self, text: str, max_width: int = 900) -> list[str]:
-        """Wrap text to fit within max width.
-
-        Uses simple word-based wrapping (doesn't account for font width variations).
+    @staticmethod
+    def _wrap_text(text: str, max_lines: int = 3) -> list[str]:
+        """Wrap text to maximum lines.
 
         Args:
             text: Text to wrap
-            max_width: Maximum width in pixels (approximate)
+            max_lines: Maximum lines (default 3)
 
         Returns:
             List of wrapped lines
@@ -256,7 +284,7 @@ class LinkedInImageRenderer:
         lines = []
         current_line = []
 
-        # Very rough estimate: ~20 chars per line at this font size
+        # Rough estimate: ~20 chars per line at 32pt font
         max_chars = 35
 
         for word in words:
@@ -270,41 +298,53 @@ class LinkedInImageRenderer:
                     lines.append(word)
                     current_line = []
 
-        if current_line:
+                if len(lines) >= max_lines:
+                    break
+
+        if current_line and len(lines) < max_lines:
             lines.append(" ".join(current_line))
 
-        return lines if lines else [text[:max_chars]]
+        return lines if lines else [text[:35]]
 
 
 async def render_linkedin_image(
+    branding_config: "BrandingConfig",
     thought: str,
     profile_name: Optional[str] = None,
     profile_role: Optional[str] = None,
+    font_path: Optional[str] = None,
     save_path: Optional[str] = None,
-    template_path: Optional[str] = None,
 ) -> bytes:
-    """Async wrapper for image rendering.
+    """Render LinkedIn image with branding configuration.
+
+    Supports both blank and pre-branded templates via BrandingConfig.
 
     Args:
-        thought: AI thought (20-35 words, plain text, no markdown)
-        profile_name: Override default profile name from config
-        profile_role: Override default profile role from config
+        branding_config: BrandingConfig with template and rendering instructions
+        thought: AI-generated thought (8-12 words, one sentence)
+        profile_name: Display name (used only if config.draw_name=True)
+        profile_role: Designation/headline (used only if config.draw_role=True)
+        font_path: Optional path to TTF font
         save_path: Optional path to save PNG locally
-        template_path: Override default template path
 
     Returns:
         PNG image bytes ready for LinkedIn upload
 
     Raises:
-        ValueError if thought is None or empty
+        FileNotFoundError: If template not found
+        Exception: If rendering fails
     """
     if not thought:
-        raise ValueError("Thought is required for image rendering")
+        raise ValueError("Thought is required for rendering")
 
-    renderer = LinkedInImageRenderer(template_path=template_path)
+    renderer = LinkedInImageRenderer(branding_config)
     image_bytes = renderer.render(
-        thought, profile_name, profile_role, save_path
+        thought=thought,
+        profile_name=profile_name,
+        profile_role=profile_role,
+        font_path=font_path,
+        save_path=save_path,
     )
 
-    logger.info(f"Rendered image: {len(image_bytes)} bytes")
+    logger.info(f"Render complete: {len(image_bytes)} bytes")
     return image_bytes

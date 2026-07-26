@@ -12,6 +12,21 @@ from app.db.database import get_session_maker
 
 logger = logging.getLogger(__name__)
 
+# Diverse backend engineering domains to force entropy on every selection
+# Used to bias topic selection and ensure variety (prevents repetition in fallback LLMs)
+DOMAINS = [
+    "Distributed Systems",
+    "Database Indexing & Caching",
+    "Event-Driven Architecture",
+    "JVM Memory & GC Tuning",
+    "API Gateway & Mesh",
+    "DevOps & CI/CD Pipelines",
+    "Data Consistency & Idempotency",
+    "Microservices Security & IAM",
+    "Kafka & Message Broker Scaling",
+    "Kubernetes & Pod Orchestration",
+]
+
 # Curated topics organized by category for diversity
 TOPIC_CATEGORIES = {
     "java_spring": [
@@ -78,10 +93,11 @@ TOPIC_CATEGORIES = {
 
 
 async def select_topic_autonomously() -> tuple[str, str]:
-    """Select topic autonomously, avoiding recent duplicates.
+    """Select topic autonomously, avoiding recent duplicates with entropy injection.
 
     Queries recent posts from database to build a set of excluded topics,
-    then randomly selects from remaining topics to maintain diversity.
+    then randomly selects from remaining topics while injecting domain entropy
+    to force variety (prevents fallback LLMs from repeating stale topics).
 
     Returns:
         Tuple of (selected_topic, category)
@@ -109,6 +125,11 @@ async def select_topic_autonomously() -> tuple[str, str]:
 
     logger.info(f"Excluded {len(recent_topics)} recent topics from selection")
 
+    # ENTROPY INJECTION: Randomly select 3 domains to bias selection today
+    # This forces even low-entropy fallback models (Gemma, Ollama) to pick fresh topics
+    selected_domains = random.sample(DOMAINS, min(3, len(DOMAINS)))
+    logger.info(f"Entropy injection: Biasing selection toward {selected_domains}")
+
     # Find candidate topics not in recent posts
     for attempt in range(20):  # Try up to 20 times to find a unique topic
         category = random.choice(list(TOPIC_CATEGORIES.keys()))
@@ -118,7 +139,7 @@ async def select_topic_autonomously() -> tuple[str, str]:
         if topic not in recent_topics:
             logger.info(
                 f"Selected topic (attempt {attempt + 1}): '{topic}' "
-                f"from category '{category}'"
+                f"from category '{category}' | Entropy seed: {selected_domains}"
             )
             return topic, category
 
@@ -127,7 +148,7 @@ async def select_topic_autonomously() -> tuple[str, str]:
     topic = random.choice(TOPIC_CATEGORIES[category])
     logger.warning(
         f"Could not find unique topic after 20 attempts. "
-        f"Selected: '{topic}' from '{category}' (may be recent)"
+        f"Selected: '{topic}' from '{category}' (may be recent) | Entropy seed: {selected_domains}"
     )
     return topic, category
 

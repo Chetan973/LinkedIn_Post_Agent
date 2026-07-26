@@ -14,7 +14,7 @@ from app.core.instrumentation import (
     log_http_request,
     log_http_response,
 )
-
+from app.core.prompt_loader import extract_clean_text, enforce_aggressive_whitespace
 from app.Services.linkedin import publish_to_linkedin, LinkedInRateLimitError
 from app.Services.linkedin_media import upload_image_to_linkedin
 from app.api.schemas import PostGenerateRequest, PostResponse
@@ -41,6 +41,9 @@ def truncate_for_linkedin(text: str, max_length: int = LINKEDIN_MAX_COMMENTARY_L
     Attempts to break at sentence boundary if possible. If text contains hashtags
     at the end, preserves them if they fit within the limit.
     """
+    # Use universal extractor to handle dict, list, stringified objects
+    text = extract_clean_text(text)
+
     if len(text) <= max_length:
         return text
 
@@ -64,8 +67,8 @@ async def run_agent(post_id: int):
 
     Complete lifecycle:
     1. Select topic (autonomous, deduplicated)
-    2. Draft content (3000-3500 chars)
-    3. Generate thought (20-35 words for image)
+    2. Draft content (180-260 words, bullets primary)
+    3. Generate thought (8-12 words, one sentence for image)
     4. Validate content
     5. Render image
     6. Publish to LinkedIn
@@ -111,6 +114,7 @@ async def run_agent(post_id: int):
                 image_url=None,
                 image_rendered_at=False,
                 asset_urn=None,
+                person_urn=getattr(settings, "LINKEDIN_PERSON_URN", ""),
             )
 
             # Configure with thread_id as post_id for checkpointing
@@ -237,11 +241,13 @@ async def run_agent(post_id: int):
 
                 try:
                     tracer.info(f"[{cid}] Calling upload_image_to_linkedin()...")
+                    # Last-mile whitespace enforcement for image post commentary
+                    image_post_text = enforce_aggressive_whitespace(draft_content)
                     # 1. Upload image to LinkedIn Images API
                     upload_start = time.time()
                     _, image_urn = await upload_image_to_linkedin(
                         image_url=image_url,
-                        post_text=draft_content,
+                        post_text=image_post_text,
                         access_token=settings.LINKEDIN_ACCESS_TOKEN,
                         person_urn=settings.LINKEDIN_PERSON_URN,
                     )
@@ -388,6 +394,8 @@ async def run_agent(post_id: int):
                     tracer.info(f"[{cid}] Attempting text-only fallback...")
                     try:
                         linkedin_text = truncate_for_linkedin(draft_content)
+                        # Last-mile whitespace enforcement to guarantee visual layout on LinkedIn
+                        linkedin_text = enforce_aggressive_whitespace(linkedin_text)
                         result = await publish_to_linkedin(linkedin_text)
                         linkedin_post_id = result.get("linkedin_post_id")
                         tracer.info(
@@ -404,6 +412,8 @@ async def run_agent(post_id: int):
                 # No image, publish as text-only
                 tracer.info(f"[{cid}] No image URL, publishing text-only post")
                 linkedin_text = truncate_for_linkedin(draft_content)
+                # Last-mile whitespace enforcement to guarantee visual layout on LinkedIn
+                linkedin_text = enforce_aggressive_whitespace(linkedin_text)
                 tracer.info(f"[{cid}] Calling publish_to_linkedin() for text-only...")
                 result = await publish_to_linkedin(linkedin_text)
                 linkedin_post_id = result.get("linkedin_post_id")

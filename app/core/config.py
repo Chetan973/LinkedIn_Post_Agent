@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     # LLM Fallback (Gemini 3.5 Flash with Ollama fallback)
     GEMINI_API_KEY: str = Field(default="")
-    GEMINI_MODEL_NAME: str = Field(default="gemini-2.5-flash")
+    GEMINI_MODEL_NAME: str = Field(default="gemini-3.5-flash")
     OLLAMA_BASE_URL: str = Field(default="http://localhost:11434")
     OLLAMA_MODEL_NAME: str = Field(default="gemma3:4b")
 

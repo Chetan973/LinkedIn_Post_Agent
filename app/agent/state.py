@@ -9,8 +9,8 @@ class AgentState(TypedDict, total=False):
 
     Fully autonomous workflow with zero human intervention:
     1. Topic Selection (deduplicated, category-diverse)
-    2. Content Drafting (3000-3500 words, technical depth)
-    3. Thought Generation (20-35 words, image overlay)
+    2. Content Drafting (180-260 words, bullets primary)
+    3. Thought Generation (8-12 words, one sentence, image overlay)
     4. Content Validation (char count, formatting)
     5. Image Rendering (PIL template + text overlay)
     6. Publishing to LinkedIn
@@ -23,8 +23,8 @@ class AgentState(TypedDict, total=False):
     post_id: int
     topic: str  # Selected topic from autonomous selection
     selected_category: str  # Category (java_spring, python_async, etc.)
-    draft_content: str  # Main post content (3000-3500 chars)
-    ai_thought: Optional[str]  # Thought for image overlay (20-35 words)
+    draft_content: str  # Main post content (180-260 words, bullets primary)
+    ai_thought: Optional[str]  # Thought for image overlay (8-12 words, one sentence)
     char_count: int  # Final content length
 
     # Image rendering
@@ -49,6 +49,9 @@ class AgentState(TypedDict, total=False):
     draft_generated_at: Optional[datetime]  # Draft generation time
     thought_generated_at: Optional[datetime]  # Thought generation time
     image_rendered_at: Optional[datetime]  # Image rendering time
+
+    # Branding (URN-based, for template selection)
+    person_urn: Optional[str]  # LinkedIn Person URN for authenticated user
 
     # Legacy fields for compatibility
     feedback: Optional[str]  # Human feedback (if needed)

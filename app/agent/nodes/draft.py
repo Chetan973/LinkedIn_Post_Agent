@@ -9,6 +9,7 @@ import asyncio
 from langchain_core.messages import HumanMessage, AIMessage
 from app.agent.state import AgentState
 from app.core.config import settings
+from app.core.prompt_loader import get_linkedin_system_prompt, get_linkedin_user_message, extract_clean_text, enforce_aggressive_whitespace
 from app.Services.llm_fallback import FallbackLLM
 
 logger = logging.getLogger(__name__)
@@ -16,35 +17,8 @@ logger = logging.getLogger(__name__)
 # Concurrency control - limit simultaneous LLM calls
 llm_semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_LLM_CALLS)
 
-SYSTEM_PROMPT = """You are a world-class backend engineer and technical thought leader specializing in:
-- Cloud infrastructure, distributed systems, and scalability patterns
-- RESTful APIs, microservices architecture, and system design
-- Generative AI, LLMs, and advanced ML systems
-- Database optimization, performance engineering, and reliability
-
-Your task is to write HIGHLY TECHNICAL content with TECHNICAL MOTIVE THOUGHTS suited for advanced backend engineering audiences. Each post should:
-
-1. Demonstrate deep technical expertise and insights
-2. Share lessons learned from real-world backend engineering challenges
-3. Provide actionable technical knowledge and best practices
-4. Use precise technical terminology while remaining clear
-5. Include practical examples, architectural patterns, or technical decisions
-
-Writing style:
-- 2-3 well-crafted paragraphs (3000-3500 characters total)
-- Lead with the core technical insight
-- Include specific technical details (not generic)
-- Reference relevant systems, patterns, or technologies
-- End with a thought-provoking question or call-to-action
-- Use relevant hashtags (#backend #engineering #systems etc.)
-- Professional, authoritative, yet approachable tone
-
-CRITICAL:
-- Write for an ADVANCED backend engineering audience (not entry-level)
-- Focus on original perspectives and insights
-- Problem-solving and innovation mindset
-- NO markdown, NO HTML tags, NO code blocks
-- NEVER mention other posts or content"""
+# Load system prompt from markdown file
+SYSTEM_PROMPT = get_linkedin_system_prompt()
 
 
 async def draft_post_node(state: dict) -> dict:
@@ -72,23 +46,8 @@ async def draft_post_node(state: dict) -> dict:
     async with llm_semaphore:
         llm = FallbackLLM(temperature=0.7)
 
-        user_message = f"""Write a HIGHLY TECHNICAL LinkedIn post about the following topic.
-Focus on TECHNICAL MOTIVE THOUGHTS and deep engineering insights.
-
-Topic: {topic}
-
-Requirements:
-- Write for an ADVANCED backend engineering audience
-- Include specific technical details and engineering principles
-- Share lessons learned or insights from real-world systems
-- Use precise technical terminology
-- 2-3 well-crafted paragraphs
-- 3000-3500 characters (target length for engagement without truncation)
-- Include hashtags and a thought-provoking question
-- Professional, authoritative tone
-- NO markdown, NO HTML, NO code blocks
-
-Make this a standout technical post that demonstrates deep expertise and original thinking."""
+        # Load user message from markdown prompt file (single source of truth)
+        user_message = get_linkedin_user_message(topic)
 
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -98,8 +57,13 @@ Make this a standout technical post that demonstrates deep expertise and origina
         try:
             response = await llm.ainvoke(messages)
 
-            # Extract content and validate it's a string
-            draft_text = response.content if isinstance(response.content, str) else str(response.content)
+            # Use universal extractor to handle ALL LangChain response formats
+            # Extracts text from: AIMessage objects, dicts, lists, stringified objects, metadata
+            draft_text = extract_clean_text(response)
+
+            # Enforce aggressive whitespace around checklist items and mini-headers
+            # Ensures blank lines between ☑️ items and 💡🚀🧠👇 headers for scannability
+            draft_text = enforce_aggressive_whitespace(draft_text)
 
             logger.info(
                 f"Draft generated using {response.model_used} "
@@ -119,5 +83,12 @@ Make this a standout technical post that demonstrates deep expertise and origina
             }
 
         except Exception as e:
-            logger.error(f"Error drafting post for topic '{topic}': {str(e)}")
-            raise
+            logger.error(
+                f"CRITICAL: Both primary and fallback LLMs failed for topic '{topic}'. "
+                f"Primary error: {str(e)[:200]}. "
+                f"Workflow cannot continue without post content."
+            )
+            # Return error state - workflow will fail gracefully at validation stage
+            raise ValueError(
+                f"Post generation failed: Both LLMs unavailable. Topic: {topic}"
+            ) from e

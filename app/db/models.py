@@ -75,7 +75,7 @@ class Post(Base):
     ai_thought: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True,
-        comment="AI-generated thought for image overlay (20-35 words)",
+        comment="AI-generated thought for image overlay (8-12 words, one sentence)",
     )
 
     # Status & Publishing

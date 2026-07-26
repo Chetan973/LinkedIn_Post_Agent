@@ -15,8 +15,8 @@ def get_agent_graph(checkpointer: Optional[AsyncPostgresSaver] = None):
 
     Complete pipeline:
     1. Topic Selection (autonomous, deduplicated, category-diverse)
-    2. Content Drafting (3000-3500 chars, technical depth)
-    3. Thought Generation (20-35 words, image overlay)
+    2. Content Drafting (180-260 words, bullets primary)
+    3. Thought Generation (8-12 words, one sentence, image overlay)
     4. Validation (char count, formatting, dedup)
     5. Image Rendering (PIL template + text overlay)
     6. END

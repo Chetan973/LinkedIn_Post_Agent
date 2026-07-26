@@ -7,6 +7,7 @@ from tenacity import (
     retry_if_exception_type,
 )
 from app.core.config import settings
+from app.core.prompt_loader import enforce_aggressive_whitespace
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +54,13 @@ async def publish_to_linkedin(content: str) -> dict:
         "LinkedIn-Version": "202606"
     }
 
+    # ABSOLUTE BOTTLENECK: Force double spacing on commentary right before payload serialization
+    # This is mathematically impossible to bypass - happens immediately before JSON request
+    clean_commentary = enforce_aggressive_whitespace(content)
+
     payload = {
         "author": settings.LINKEDIN_PERSON_URN,
-        "commentary": content,
+        "commentary": clean_commentary,
         "visibility": "PUBLIC",
         "distribution": {
             "feedDistribution": "MAIN_FEED",
