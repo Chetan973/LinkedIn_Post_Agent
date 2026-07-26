@@ -12,33 +12,30 @@ python-dotenv>=1.0.0
 # Database & ORM
 sqlalchemy>=2.0.25
 alembic>=1.13.1
-psycopg[binary]==3.1.14
-psycopg-binary==3.1.14
+psycopg[binary,pool]==3.1.14
 
 # Async & Utilities
 aiohttp>=3.9.1
 httpx>=0.25.2
 tenacity>=8.2.0
-pillow>=10.0.0
+pillow==10.1.0
 
-# LangChain, LangGraph & AI Integration
-langchain>=0.1.10
-langgraph>=0.0.36
-langsmith>=0.0.83
-langchain-core>=0.1.42
-langchain-google-genai>=0.0.7
-langchain-ollama>=0.1.0
-langgraph-checkpoint-postgres>=2.0.0
-
-# LLM-specific
-google-generativeai==0.3.0
-ollama
-
-# Image Processing
-Pillow==10.1.0
+# LangChain, LangGraph & AI Integration (Pinned to stop pip backtracking)
+langchain==0.3.14
+langgraph==0.2.60
+langsmith>=0.1.147
+langchain-core==0.3.28
+langchain-google-genai==2.0.8
+langchain-ollama==0.2.2
+langgraph-checkpoint-postgres==2.0.9
 
 # Utilities & Logging
 pydantic==2.5.3
 pydantic-settings==2.1.0
 pyyaml==6.0.1
+
+
+# LLM-specific
+google-generativeai==0.3.0
+ollama
 
