@@ -20,22 +20,21 @@ httpx>=0.25.2
 tenacity>=8.2.0
 pillow==10.1.0
 
-# LangChain, LangGraph & AI Integration (Pinned to stop pip backtracking)
+# LangChain, LangGraph & AI Integration (Synchronized 0.3.x Ecosystem)
 langchain==0.3.14
-langgraph==0.2.60
-langsmith>=0.1.147
 langchain-core==0.3.28
+langchain-community==0.3.14
+langgraph==0.2.60
+langsmith==0.1.147
 langchain-google-genai==2.0.8
 langchain-ollama==0.2.2
 langgraph-checkpoint-postgres==2.0.9
+ollama
 
 # Utilities & Logging
 pydantic==2.5.3
 pydantic-settings==2.1.0
 pyyaml==6.0.1
-
-
 # LLM-specific
 google-generativeai==0.3.0
-ollama
 
