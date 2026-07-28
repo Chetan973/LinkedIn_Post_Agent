@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.core.config import settings
 from app.db.database import init_db
-from app.api.routers import posts
+from app.api.routers import posts, oauth
 
 # Fix for Windows ProactorEventLoop incompatibility with psycopg3
 if sys.platform == "win32":
@@ -34,6 +34,7 @@ app = FastAPI(
 
 # Include routers
 app.include_router(posts.router, prefix="/api/v1")
+app.include_router(oauth.router, prefix="/api/v1")
 
 
 @app.get("/")

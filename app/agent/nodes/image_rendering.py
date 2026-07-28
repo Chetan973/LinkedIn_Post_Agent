@@ -16,7 +16,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from app.Services.image_renderer import render_linkedin_image
+from app.services.image_renderer import render_linkedin_image
 from app.branding.resolver import BrandResolver
 from app.core.config import settings
 from app.core.instrumentation import create_context_logger, get_correlation_id

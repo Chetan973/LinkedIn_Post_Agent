@@ -3,8 +3,9 @@ import logging
 from langchain_core.messages import HumanMessage, AIMessage
 from app.agent.state import AgentState
 from app.core.config import settings
-from app.Services.llm_fallback import FallbackLLM
-from app.Services.image_generation import generate_post_image
+from app.core.prompt_loader import get_linkedin_system_prompt
+from app.services.llm_fallback import FallbackLLM
+from app.services.image_generation import generate_post_image
 from app.core.instrumentation import create_context_logger, get_correlation_id
 
 logger = logging.getLogger(__name__)
@@ -12,35 +13,8 @@ tracer = create_context_logger(__name__)
 
 llm_semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_LLM_CALLS)
 
-SYSTEM_PROMPT = """You are a world-class backend engineer and technical thought leader specializing in:
-- Cloud infrastructure, distributed systems, and scalability patterns
-- RESTful APIs, microservices architecture, and system design
-- Generative AI, LLMs, and advanced ML systems
-- Database optimization, performance engineering, and reliability
-
-Your task is to write HIGHLY TECHNICAL content with TECHNICAL MOTIVE THOUGHTS suited for advanced backend engineering audiences. Each post should:
-
-1. Demonstrate deep technical expertise and insights
-2. Share lessons learned from real-world backend engineering challenges
-3. Provide actionable technical knowledge and best practices
-4. Use precise technical terminology while remaining clear
-5. Include practical examples, architectural patterns, or technical decisions
-
-Writing style:
-- 2-3 well-crafted paragraphs
-- Lead with the core technical insight
-- Include specific technical details (not generic)
-- Reference relevant systems, patterns, or technologies
-- End with a thought-provoking question or call-to-action
-- Use relevant hashtags (#backend #engineering #systems etc.)
-- Professional, authoritative, yet approachable tone
-
-Focus on:
-- Technical depth over breadth
-- Real-world applicability
-- Advanced audience (not entry-level)
-- Original perspectives and insights
-- Problem-solving and innovation"""
+# Load system prompt from production source (SYSTEM_PROMPT.md)
+SYSTEM_PROMPT = get_linkedin_system_prompt()
 
 
 async def draft_post(state: AgentState) -> dict:

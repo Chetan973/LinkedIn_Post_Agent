@@ -18,13 +18,48 @@ class PostStatus(str, Enum):
 
 
 class User(Base):
-    """User model for storing LinkedIn user information."""
+    """User model for storing LinkedIn user information and OAuth session credentials.
+
+    Stores both user profile data and persistent OAuth tokens for automatic
+    session refresh. When tokens expire, they're automatically refreshed
+    via the Supabase GoTrue API without user intervention.
+    """
     __tablename__ = "users"
 
     user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    full_name: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     linkedin_profile_url: Mapped[str] = mapped_column(String(500), nullable=False)
-    
+
+    # OAuth Token Persistence (for automatic session refresh)
+    access_token: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Current Supabase JWT access token (1 hour validity)",
+    )
+    refresh_token: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Supabase refresh token (used for silent re-auth when access_token expires)",
+    )
+    token_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="Timestamp when access_token expires; triggers auto-refresh if within threshold",
+    )
+
+    # LinkedIn OAuth Provider Tokens (for direct LinkedIn API publishing)
+    linkedin_access_token: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Raw OAuth provider token from LinkedIn for direct API publishing",
+    )
+    linkedin_person_urn: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
+        comment="LinkedIn Person URN (urn:li:person:...) for API publishing",
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -44,7 +79,7 @@ class User(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<User(user_id={self.user_id}, email={self.email})>"
+        return f"<User(user_id={self.user_id}, email={self.email}, has_session={self.access_token is not None})>"
 
 
 class Post(Base):

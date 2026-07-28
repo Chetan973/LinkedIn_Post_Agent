@@ -12,8 +12,8 @@ import logging
 import re
 import random
 from langchain_core.messages import HumanMessage, AIMessage
-from app.core.prompt_loader import get_image_thought_prompt, extract_clean_text
-from app.Services.llm_fallback import FallbackLLM
+from app.core.prompt_loader import get_image_thought_system_prompt, get_image_thought_prompt, extract_clean_text
+from app.services.llm_fallback import FallbackLLM
 
 logger = logging.getLogger(__name__)
 
@@ -98,18 +98,22 @@ async def thought_generation_node(state: dict) -> dict:
     # Lower temperature for focused, consistent thought generation
     llm = FallbackLLM(temperature=0.5)
 
-    # Load prompt from markdown file
+    # Load system prompt and user prompt from markdown files
+    system_prompt = get_image_thought_system_prompt()
     base_prompt = get_image_thought_prompt()
 
     # Prompt for engineering principle extraction
-    prompt = f"""{base_prompt}
+    user_prompt = f"""{base_prompt}
 
 Post excerpt:
 {draft_content[:500]}
 
 Return ONLY the principle. No quotes."""
 
-    messages = [{"role": "user", "content": prompt}]
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
 
     try:
         response = await llm.ainvoke(messages)

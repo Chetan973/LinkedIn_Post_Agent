@@ -15,8 +15,8 @@ from app.core.instrumentation import (
     log_http_response,
 )
 from app.core.prompt_loader import extract_clean_text, enforce_aggressive_whitespace
-from app.Services.linkedin import publish_to_linkedin, LinkedInRateLimitError
-from app.Services.linkedin_media import upload_image_to_linkedin
+from app.services.linkedin import publish_to_linkedin, LinkedInRateLimitError
+from app.services.linkedin_media import upload_image_to_linkedin
 from app.api.schemas import PostGenerateRequest, PostResponse
 from app.api.dependencies import get_db
 from app.api.auth import get_current_user

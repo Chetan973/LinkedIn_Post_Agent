@@ -10,7 +10,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from app.agent.state import AgentState
 from app.core.config import settings
 from app.core.prompt_loader import get_linkedin_system_prompt, get_linkedin_user_message, extract_clean_text, enforce_aggressive_whitespace
-from app.Services.llm_fallback import FallbackLLM
+from app.services.llm_fallback import FallbackLLM
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +49,20 @@ async def draft_post_node(state: dict) -> dict:
         # Load user message from markdown prompt file (single source of truth)
         user_message = get_linkedin_user_message(topic)
 
+        # Add explicit topic freshness enforcement to user message
+        user_message_with_freshness = f"""{user_message}
+
+TOPIC FRESHNESS REMINDER:
+The topic '{topic}' has been autonomously selected to represent LATEST, TRENDING technologies.
+Ensure your post emphasizes:
+- Modern, production-ready engineering practices (not stale or overexplained concepts)
+- Recent innovations and tools that senior engineers are actively adopting
+- Cutting-edge frameworks and infrastructure approaches
+- Direct relevance to ongoing backend/ML engineering challenges"""
+
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
+            {"role": "user", "content": user_message_with_freshness},
         ]
 
         try:
