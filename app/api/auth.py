@@ -181,7 +181,7 @@ async def get_current_user(db: AsyncSession = Depends(get_db)) -> User:
     """
     try:
         # Get default email from settings (e.g., "vinayuttangi@gmail.com")
-        default_email = getattr(settings, "LINKEDIN_USER_EMAIL", "vinayuttangi@gmail.com")
+        default_email = getattr(settings, "LINKEDIN_USER_EMAIL", "pranavkumarpk0107@gmail.com")
         logger.debug(f"Looking up user: {default_email}")
 
         # 1. Try fetching from database first
@@ -199,7 +199,7 @@ async def get_current_user(db: AsyncSession = Depends(get_db)) -> User:
 
         fallback_user = User(
             email=default_email,
-            full_name=getattr(settings, "LINKEDIN_USER_NAME", "VINAYAKA P"),
+            full_name=getattr(settings, "LINKEDIN_USER_NAME", "PRANAV KUMAR"),
             linkedin_profile_url=getattr(
                 settings,
                 "LINKEDIN_PROFILE_URL",
