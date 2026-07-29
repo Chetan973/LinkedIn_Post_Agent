@@ -104,8 +104,13 @@ async def image_rendering_node(state: dict) -> dict:
         render_start = datetime.now()
 
         font_path = settings.FONTS_PATH + "Inter_18pt-SemiBold.ttf"
-        profile_name = getattr(settings, "PROFILE_NAME", "")
-        profile_role = getattr(settings, "PROFILE_ROLE", "")
+
+        # Identity comes from the resolved per-URN branding config, NOT from the
+        # global PROFILE_NAME/PROFILE_ROLE settings. Falling back to settings
+        # here is what previously stamped "Chetan P" onto every user's image.
+        # For prebranded templates these are ignored entirely (draw_name=False).
+        profile_name = branding_config.display_name or getattr(settings, "PROFILE_NAME", "")
+        profile_role = branding_config.display_role or getattr(settings, "PROFILE_ROLE", "")
 
         image_bytes = await render_linkedin_image(
             branding_config=branding_config,

@@ -289,6 +289,14 @@ async def run_agent(post_id: int):
                         # Truncate content to LinkedIn's 4000 char limit
                         linkedin_text = truncate_for_linkedin(draft_content)
 
+                        # CRITICAL: last-mile whitespace enforcement.
+                        # `image_post_text` was computed above but only fed to
+                        # upload_image_to_linkedin(), whose payload we discard and
+                        # rebuild here - so image posts published with the raw,
+                        # single-newline draft while text-only posts came out
+                        # correctly spaced. Enforce it on the text we actually send.
+                        linkedin_text = enforce_aggressive_whitespace(linkedin_text)
+
                         # LinkedIn REST API payload for image posts
                         # IMPORTANT: content.media MUST be a dictionary, not an array
                         post_payload = {

@@ -1,0 +1,101 @@
+# Render.com Blueprint for the LinkedIn Post Agent.
+#
+# Two services:
+#   1. linkedin-agent      - the FastAPI web service
+#   2. linkedin-agent-cron - a Cron Job that triggers one post Mon/Wed/Fri
+#
+# The cron job only fires the HTTP trigger. Topic selection, the 14-domain
+# whitelist gate and intra-week domain diversity all live inside the agent
+# graph (app/agent/nodes/topic_selection.py), so the schedule stays dumb.
+#
+# Deploy: Render Dashboard -> New -> Blueprint -> point at this repo.
+# Secrets marked `sync: false` are entered once in the Render dashboard and
+# are never committed here.
+
+services:
+  - type: web
+    name: linkedin-agent
+    runtime: python
+    plan: starter
+    region: oregon
+    branch: main
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn app.api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+
+      # --- Database ---
+      - key: DATABASE_URL
+        sync: false
+
+      # --- LLM providers ---
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL_NAME
+        value: gemini-3.5-flash
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL_NAME
+        value: llama-3.1-8b-instant
+
+      # --- LinkedIn publishing ---
+      - key: LINKEDIN_ACCESS_TOKEN
+        sync: false
+      - key: LINKEDIN_PERSON_URN
+        sync: false
+
+      # --- Per-user branding (URN -> template) ---
+      # Chetan -> linkedin_template.png        (blank: draws name/role/badge)
+      # Pranav -> Pranav_Linkedin_Template.jpeg (prebranded: thought only)
+      - key: CHETAN_PERSON_URN
+        sync: false
+      - key: PRANAV_PERSON_URN
+        sync: false
+      - key: PRANAV_THOUGHT_TOP_Y
+        value: "545"
+
+      # --- Supabase auth ---
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+
+      # --- Rendering ---
+      - key: TEMPLATE_IMAGE_PATH
+        value: assets/branding/linkedin_template.png
+      - key: FONTS_PATH
+        value: assets/fonts/
+
+      - key: MAX_CONCURRENT_LLM_CALLS
+        value: "2"
+
+  # Three unique posts per week: Monday, Wednesday, Friday at 09:00 UTC.
+  # Change `schedule` to shift the cadence; the agent enforces one distinct
+  # domain per post within each calendar week regardless of when it fires.
+  - type: cron
+    name: linkedin-agent-cron
+    runtime: python
+    plan: starter
+    region: oregon
+    branch: main
+    schedule: "0 9 * * 1,3,5"
+    buildCommand: pip install --upgrade pip && pip install httpx
+    startCommand: python scripts/scheduled_post.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+
+      # Public URL of the web service above. Render wires this automatically.
+      - key: APP_BASE_URL
+        fromService:
+          type: web
+          name: linkedin-agent
+          property: host
+
+      - key: REQUEST_TIMEOUT_SECONDS
+        value: "60"

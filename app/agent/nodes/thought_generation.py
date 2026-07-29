@@ -143,9 +143,25 @@ Return ONLY the principle. No quotes."""
             "ai_thought": thought,
             "thought_tokens_used": response.tokens_used or 0,
             "messages": [
-                HumanMessage(content=prompt),
+                HumanMessage(content=user_prompt),
                 AIMessage(content=thought),
             ],
+        }
+
+    except (NameError, AttributeError, TypeError, KeyError) as e:
+        # Bug in our own code, NOT an LLM failure. Log loudly - silently falling
+        # back here would mask defects and ship canned thoughts forever.
+        logger.error(
+            f"CODE DEFECT in thought_generation (not an LLM failure): "
+            f"{type(e).__name__}: {str(e)}",
+            exc_info=True,
+        )
+        thought = random.choice(EMERGENCY_THOUGHTS)
+        logger.warning(f"Using emergency fallback thought after code defect: {thought}")
+        return {
+            "ai_thought": thought,
+            "thought_tokens_used": 0,
+            "messages": [],
         }
 
     except Exception as e:

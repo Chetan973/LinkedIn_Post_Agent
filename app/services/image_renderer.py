@@ -106,11 +106,11 @@ class LinkedInImageRenderer:
                     self._render_text(draw, profile_role, fonts["role"], "below-name")
                 if self.config.draw_badge:
                     self._render_badge(draw, 50, 50, fonts["role"])
-                self._render_thought_centered(draw, thought, fonts["thought"])
+                self._render_thought_centered(draw, thought, fonts["thought"], img.size)
             else:
                 # Mode B: Draw thought only (template is immutable)
                 logger.debug("Mode B: Rendering pre-branded template (thought only)")
-                self._render_thought_centered(draw, thought, fonts["thought"])
+                self._render_thought_centered(draw, thought, fonts["thought"], img.size)
 
             # Step 4: Save if requested
             if save_path:
@@ -237,37 +237,63 @@ class LinkedInImageRenderer:
         draw: ImageDraw.ImageDraw,
         thought: str,
         font: ImageFont.FreeTypeFont,
+        img_size: Optional[tuple[int, int]] = None,
     ) -> None:
-        """Render thought text centered on image.
+        """Render thought text horizontally centered, white, up to 3 lines.
 
-        Supports up to 3 lines, center-aligned, white text.
+        Vertical placement:
+        - If BrandingConfig.thought_top_y is set, the first line starts at that
+          absolute y. Use this for pre-branded templates where the brand block
+          (photo, name, role, badge) sits mid-image and the thought must appear
+          BELOW it rather than on top of it.
+        - Otherwise the block is vertically centered on the ACTUAL image height.
 
         Args:
             draw: PIL ImageDraw object
             thought: Thought text
             font: Font for rendering
+            img_size: (width, height) of the template. Falls back to the
+                LinkedIn portrait defaults when not supplied.
         """
+        width, height = img_size if img_size else (LINKEDIN_WIDTH, LINKEDIN_HEIGHT)
+
         wrapped_lines = self._wrap_text(thought, max_lines=3)
 
-        # Calculate vertical position (center of image)
         line_height = 50
         total_height = len(wrapped_lines) * line_height
-        start_y = (LINKEDIN_HEIGHT - total_height) // 2
 
-        # White text color
+        anchor = getattr(self.config, "thought_top_y", None)
+        if anchor is not None:
+            start_y = int(anchor)
+            # Keep the block on-canvas if the thought wraps to more lines
+            # than the anchor leaves room for.
+            max_start = height - total_height - 20
+            if start_y > max_start:
+                logger.warning(
+                    f"thought_top_y={anchor} leaves no room for "
+                    f"{len(wrapped_lines)} lines on a {width}x{height} template. "
+                    f"Clamping to {max_start}."
+                )
+                start_y = max(20, max_start)
+            placement = f"anchored below brand block at y={start_y}"
+        else:
+            start_y = (height - total_height) // 2
+            placement = f"centered on {width}x{height}"
+
         text_color = (255, 255, 255)
 
-        # Draw each line centered
         for i, line in enumerate(wrapped_lines):
             bbox = draw.textbbox((0, 0), line, font=font)
             text_width = bbox[2] - bbox[0]
 
-            x = (LINKEDIN_WIDTH - text_width) // 2
+            x = (width - text_width) // 2
             y = start_y + (i * line_height)
 
             draw.text((x, y), line, font=font, fill=text_color)
 
-        logger.info(f"Rendered thought ({len(wrapped_lines)} lines, white text)")
+        logger.info(
+            f"Rendered thought ({len(wrapped_lines)} lines, white text, {placement})"
+        )
 
     @staticmethod
     def _wrap_text(text: str, max_lines: int = 3) -> list[str]:

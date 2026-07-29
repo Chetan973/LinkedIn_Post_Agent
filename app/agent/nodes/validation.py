@@ -13,6 +13,7 @@ Validates:
 import logging
 import re
 from app.core.prompt_loader import enforce_aggressive_whitespace
+from app.agent.nodes.topic_selection import ALLOWED_DOMAINS
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +54,33 @@ async def validate_content_node(state: dict) -> dict:
     """
     draft_content = state.get("draft_content", "")
     thought = state.get("ai_thought")
+    selected_category = state.get("selected_category", "")
     validation_errors = []
 
     try:
+        # HARD GATE: Domain whitelist compliance.
+        # Topic selection can only emit approved domains by construction, but
+        # this gate catches manual overrides, state corruption, and any future
+        # code path that sets selected_category without going through the
+        # topic_selection node.
+        if selected_category not in ALLOWED_DOMAINS:
+            logger.error(
+                f"FAIL_DOMAIN: category '{selected_category}' is outside the "
+                f"approved whitelist. Blocking publication."
+            )
+            return {
+                "draft_content": draft_content,
+                "ai_thought": thought,
+                "char_count": len(draft_content) if draft_content else 0,
+                "validation_status": "failed",
+                "validation_errors": [
+                    f"FAIL_DOMAIN: '{selected_category}' is outside the approved "
+                    f"whitelist of {len(ALLOWED_DOMAINS)} domains. Post rejected."
+                ],
+            }
+
+        logger.info(f"Domain whitelist check passed: '{selected_category}'")
+
         # Safety Net: Enforce aggressive whitespace before all other validations
         # This catches any formatting issues from LLM or prior processing
         draft_content = enforce_aggressive_whitespace(draft_content)
@@ -166,11 +191,15 @@ async def validate_content_node(state: dict) -> dict:
                 thought = re.sub(r'[*_`#~<>\[\]]', '', thought)
                 validation_errors.append("Removed markdown from thought")
 
-        # Final cleanup: normalize whitespace while PRESERVING newlines
-        # Replace multiple spaces on same line with single space, but preserve newlines
-        draft_content = re.sub(r'[ \t]+', ' ', draft_content)  # Collapse multiple spaces/tabs on same line
-        draft_content = re.sub(r'\n\s*\n', '\n', draft_content)  # Collapse multiple blank lines to single newline
-        draft_content = draft_content.strip()  # Only strip leading/trailing whitespace, NOT newlines
+        # Final cleanup: normalize horizontal whitespace only.
+        draft_content = re.sub(r'[ \t]+', ' ', draft_content)  # Collapse spaces/tabs on the same line
+
+        # DO NOT collapse blank lines here. A previous `re.sub(r'\n\s*\n', '\n', ...)`
+        # at this point undid enforce_aggressive_whitespace() above, stripping the
+        # blank line between every checklist item and mini-header and shipping a
+        # dense, hard-to-read post. Re-assert the double spacing instead.
+        draft_content = enforce_aggressive_whitespace(draft_content)
+        draft_content = draft_content.strip()
 
         if thought:
             thought = re.sub(r'[ \t]+', ' ', thought).strip()  # For thought, preserve single line but normalize spaces

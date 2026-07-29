@@ -46,6 +46,18 @@ class Settings(BaseSettings):
     PROFILE_NAME: str = Field(default="Chetan P")
     PROFILE_ROLE: str = Field(default="Gen AI Engineer")
     TEMPLATE_IMAGE_PATH: str = Field(default="assets/branding/linkedin_template.png")
+
+    # Per-user branding (URN -> template mapping, see app/branding/config.py)
+    # Chetan  -> assets/branding/linkedin_template.png       (blank, draws name/role/badge)
+    # Pranav  -> assets/branding/Pranav_Linkedin_Template.jpeg (prebranded, thought only)
+    CHETAN_PERSON_URN: str = Field(default="")
+    PRANAV_PERSON_URN: str = Field(default="")
+
+    # Y coordinate where the thought's first line starts on Pranav's pre-branded
+    # template. The brand block (photo/name/role/badge) is centered mid-image and
+    # ends near y=505, so the thought is anchored below it. Tunable without a code
+    # change if the template artwork moves.
+    PRANAV_THOUGHT_TOP_Y: int = Field(default=545)
     FONTS_PATH: str = Field(default="assets/fonts/")
     IMAGE_BRAND_COLOR: str = Field(default="#0077B5")
 
