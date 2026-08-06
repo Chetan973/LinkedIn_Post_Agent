@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Database backups - these contain LinkedIn access tokens in plaintext
+backup_*.sql

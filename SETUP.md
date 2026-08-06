@@ -1,759 +1,921 @@
-# LinkedIn Post Agent - Complete Setup Guide
+# LinkedIn Post Agent — Complete Setup Guide
 
-Welcome! This guide will walk you through setting up the LinkedIn Post Agent from scratch—locally and in production—in approximately 15 minutes.
+End-to-end setup for a fresh machine, plus the exact steps to move the agent
+onto a different LinkedIn account (Pranav Kumar).
 
-**Table of Contents**
-- [Prerequisites](#prerequisites)
-- [Local Repository & Environment Setup](#local-repository--environment-setup)
-- [Supabase Database Setup](#supabase-database-setup)
-- [Environment Configuration](#environment-configuration)
-- [Database Migrations via Alembic](#database-migrations-via-alembic)
-- [Running the Application Locally](#running-the-application-locally)
-- [Production Deployment (Render)](#production-deployment-render)
-- [Troubleshooting](#troubleshooting)
+Everything in this guide was verified against the code in this repo, not
+written from memory. Where a step matters, the file that enforces it is named.
 
----
+**Contents**
 
-## Prerequisites
-
-Before you begin, ensure you have the following installed and ready:
-
-### System Requirements
-- **Python 3.12+** (verify with `python --version`)
-  - Download from [python.org](https://www.python.org/downloads/)
-  - On Windows, ensure "Add Python to PATH" is checked during installation
-- **Git** (verify with `git --version`)
-  - Download from [git-scm.com](https://git-scm.com/)
-- **PostgreSQL Client Tools** (optional, for manual database inspection)
-  - On Windows: Download from [postgresql.org/download](https://www.postgresql.org/download/windows/)
-  - On macOS: `brew install postgresql`
-  - On Linux: `sudo apt-get install postgresql-client`
-
-### Third-Party Accounts & API Keys
-You'll need to create/obtain the following before completing setup:
-
-1. **Supabase Account** (Free tier available)
-   - Sign up at [supabase.com](https://supabase.com/)
-   - Create a new project (select PostgreSQL 15+)
-   - Note your project URL and anon key from the dashboard
-
-2. **Google Gemini API Key** (Free tier: 60 requests/minute)
-   - Visit [Google AI Studio](https://ai.google.dev/)
-   - Click "Get API Key" and create a key for your project
-   - Copy the API key (you'll need it in `.env`)
-
-3. **LangSmith API Key** (Optional but recommended for observability)
-   - Sign up at [smith.langchain.com](https://smith.langchain.com/)
-   - Create an API key from the dashboard
-   - This enables tracing, debugging, and monitoring of LLM calls
-
-4. **LinkedIn OAuth Credentials** (For production posting)
-   - Register your app at [LinkedIn Developers](https://www.linkedin.com/developers/)
-   - Create a new app and get `CLIENT_ID` and `CLIENT_SECRET`
-   - Obtain a `LINKEDIN_ACCESS_TOKEN` via OAuth flow or manually via LinkedIn app settings
-   - Find your LinkedIn Person URN from your profile URL
-
-5. **Ollama** (Optional, for fallback LLM)
-   - Download from [ollama.ai](https://ollama.ai/)
-   - After installation, run: `ollama pull gemma3:4b` (in separate terminal)
+1. [What this app actually does](#1-what-this-app-actually-does)
+2. [Prerequisites](#2-prerequisites)
+3. [Local install](#3-local-install)
+4. [Environment variables that matter](#4-environment-variables-that-matter)
+5. [Supabase database](#5-supabase-database)
+6. [Getting a LinkedIn access token](#6-getting-a-linkedin-access-token)
+7. [Getting the LinkedIn Person URN](#7-getting-the-linkedin-person-urn)
+8. [Seeding the user row (required)](#8-seeding-the-user-row-required)
+9. [Run and verify locally](#9-run-and-verify-locally)
+10. [Switching the agent to Pranav Kumar](#10-switching-the-agent-to-pranav-kumar)
+11. [Render.com deployment](#11-rendercom-deployment)
+12. [Troubleshooting](#12-troubleshooting)
 
 ---
 
-## Local Repository & Environment Setup
+## 1. What this app actually does
 
-### Step 1: Clone the Repository
+A FastAPI service wrapping a LangGraph agent. One HTTP call publishes one
+LinkedIn post, fully autonomously.
 
-Open your terminal (PowerShell on Windows, Terminal on macOS/Linux) and run:
-
-```bash
-git clone https://github.com/yourusername/linkedin-post-agent.git
-cd linkedin-post-agent
+```
+POST /api/v1/posts/generate
+        │
+        ├─ creates a `posts` row (status = queued)
+        └─ FastAPI BackgroundTask → run_agent(post_id)
+                │
+                ├─ select_topic      pick from 14 whitelisted domains,
+                │                    dedup against recent posts   (topic_selection.py)
+                ├─ draft             180–260 word post body       (draft.py)
+                ├─ generate_thought  8–12 word line for the image (thought_generation.py)
+                ├─ validate          length / formatting checks   (validation.py)
+                ├─ render_image      PIL draws thought onto the
+                │                    per-URN branding template     (image_rendering.py)
+                └─ publish           upload image → POST /rest/posts
+                                     (falls back to text-only on image failure)
 ```
 
-Replace `yourusername` with the actual GitHub username.
+- **LLM chain:** Gemini `gemini-3.5-flash` primary → Groq `llama-3.1-8b-instant`
+  fallback (`app/services/llm_fallback.py`). There is **no** OpenAI or Ollama call
+  anywhere despite what old `.env` keys suggested.
+- **State:** LangGraph checkpoints into the same Postgres (`checkpoints*` tables).
+- **Schedule:** a Render cron job hits the endpoint Mon/Wed/Fri 09:00 UTC
+  (`render.yaml` → `scripts/scheduled_post.py`). The schedule is dumb; topic
+  choice and weekly domain diversity live in the agent.
 
-### Step 2: Create a Python Virtual Environment
+### Which LinkedIn account gets posted to
 
-Creating a virtual environment isolates this project's dependencies from your system Python.
+This is the single most important thing to understand before switching accounts:
 
-**On Windows (PowerShell):**
+> Publishing uses **`LINKEDIN_ACCESS_TOKEN` and `LINKEDIN_PERSON_URN` from the
+> environment** — not the token stored on the logged-in database user.
+
+See `app/api/routers/posts.py` and `app/services/linkedin.py`. The Supabase
+OAuth login flow exists and stores tokens in `users`, but the publish path does
+not read them. So **changing the account = changing those two env vars.**
+
+The database user matters for a different reason — see [section 8](#8-seeding-the-user-row-required).
+
+---
+
+## 2. Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| **Python 3.11 or 3.12** | Render pins 3.11.9; local dev here is 3.12.10. Do not use 3.13 — `psycopg 3.2.3` and `langgraph 0.5.4` are pinned against older ABIs. |
+| **Git** | `git --version` |
+| **Supabase project** | Free tier is fine. Postgres 15+. |
+| **Google Gemini API key** | https://aistudio.google.com/apikey |
+| **Groq API key** | https://console.groq.com/keys |
+| **LinkedIn Developer app** | https://www.linkedin.com/developers/apps — must be verified against a Company Page |
+
+You do **not** need Redis, Celery, Ollama, or an OpenAI key. Ignore any older
+docs that mention them.
+
+---
+
+## 3. Local install
+
 ```powershell
+git clone <repo-url> LinkedIn_Post_Agent
+cd LinkedIn_Post_Agent
+
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
-If you encounter an execution policy error, run:
+If PowerShell blocks activation:
+
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
 
-Then retry the activation command above.
+Then:
 
-**On macOS/Linux:**
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-You should see `(.venv)` appear at the start of your terminal prompt, indicating the virtual environment is active.
-
-### Step 3: Upgrade pip and Install Dependencies
-
-Ensure pip is up-to-date:
-
-```bash
+```powershell
 pip install --upgrade pip
-```
-
-Install all project dependencies:
-
-```bash
 pip install -r requirements.txt
 ```
 
-This will install:
-- **FastAPI & Uvicorn** (web framework & server)
-- **SQLAlchemy 2.0 & Alembic** (ORM & database migrations)
-- **psycopg 3** (PostgreSQL async driver)
-- **LangChain 0.3, LangGraph, LangSmith** (AI orchestration & tracing)
-- **Pydantic** (data validation)
-- **All other dependencies** listed in `requirements.txt`
+macOS / Linux equivalent:
 
-**Verify Installation:**
 ```bash
-pip list | grep -E "fastapi|sqlalchemy|langchain|langgraph"
+python3 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip && pip install -r requirements.txt
 ```
 
-You should see entries for FastAPI, SQLAlchemy, LangChain, and LangGraph.
+Verify:
+
+```powershell
+python -c "import fastapi, sqlalchemy, langgraph, psycopg, PIL; print('deps ok')"
+```
+
+> **Windows note:** `app/api/main.py` already switches asyncio to
+> `WindowsSelectorEventLoopPolicy`, because psycopg3 cannot run on the default
+> Proactor loop. Any standalone script you write that touches the DB on Windows
+> must do the same.
 
 ---
 
-## Supabase Database Setup
+## 4. Environment variables that matter
 
-### Step 1: Create a Supabase Project
+Copy the template and edit it:
 
-1. Log in to [supabase.com](https://supabase.com/)
-2. Click **"New Project"**
-3. Fill in:
-   - **Name:** `linkedin-agent-db` (or your preferred name)
-   - **Database Password:** Generate a strong password and save it securely
-   - **Region:** Choose a region closest to your deployment location
-4. Click **"Create new project"** and wait ~2 minutes for provisioning
-
-### Step 2: Obtain the PostgreSQL Connection String
-
-1. In your Supabase project dashboard, navigate to **Settings** → **Database**
-2. Under **Connection string**, you'll see two options:
-   - **Session pooler** (for web frameworks, short-lived connections)
-   - **Transaction pooler** (for serverless, transaction-scoped connections)
-
-   **For this project, use the Session pooler URL** (it's the default and works best with SQLAlchemy + psycopg v3)
-
-3. Copy the connection string. It will look like:
-   ```
-   postgresql://postgres.xxxxx:password@db.xxxxx.supabase.co:5432/postgres
-   ```
-
-4. **Important:** Replace `[YOUR-PASSWORD]` in the URL with your actual database password (the one you set during project creation)
-
-5. **For async support with psycopg v3**, modify the URL to:
-   ```
-   postgresql+psycopg_async://postgres.xxxxx:password@db.xxxxx.supabase.co:5432/postgres
-   ```
-
-   Replace `postgresql://` with `postgresql+psycopg_async://` (note the underscore in `psycopg_async`)
-
-### Step 3: Enable Required PostgreSQL Extensions
-
-Some database migrations may require extensions like `pgvector` (for embeddings) or `uuid-ossp`. Enable them preemptively:
-
-1. In Supabase, navigate to **SQL Editor**
-2. Click **"New Query"**
-3. Paste and run the following SQL:
-   ```sql
-   -- Enable required extensions
-   CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-   CREATE EXTENSION IF NOT EXISTS "pgvector";
-   
-   -- Verify they're installed
-   SELECT extname FROM pg_extension WHERE extname IN ('uuid-ossp', 'pgvector');
-   ```
-4. You should see both extensions listed in the results
-
-### Step 4: Verify the Connection Locally
-
-Before moving forward, test that your local environment can connect to Supabase:
-
-```bash
-python -c "
-from sqlalchemy import create_engine, text
-url = 'YOUR_DATABASE_URL_HERE'  # Paste your async connection string
-engine = create_engine(url)
-with engine.connect() as conn:
-    result = conn.execute(text('SELECT 1'))
-    print('✅ Connection successful:', result.fetchone())
-"
+```powershell
+Copy-Item .env.example .env
 ```
 
-Replace `YOUR_DATABASE_URL_HERE` with your actual connection string.
+The `.env` in this repo is annotated: every key is tagged `[USED]` or commented
+out with the reason it is dead. Short version:
 
-**Expected output:**
-```
-✅ Connection successful: (1,)
-```
+### Required — the app will not work without these
 
-If you see an error:
-- **SSL verification failed:** Add `?sslmode=require` to the end of your connection URL
-- **Authentication failed:** Verify the password in your connection string matches your database password
-- **Connection refused:** Verify Supabase project is running and region is correct
+| Key | Purpose | Read by |
+|---|---|---|
+| `DATABASE_URL` | Supabase Postgres. **Must** keep the `postgresql+psycopg_async://` prefix. Quote it if the password has `$ @ #`. | `app/db/database.py` |
+| `GEMINI_API_KEY` | Primary LLM | `llm_fallback.py` |
+| `GROQ_API_KEY` | Fallback LLM | `llm_fallback.py` |
+| `LINKEDIN_ACCESS_TOKEN` | Publishes the post | `linkedin.py`, `posts.py` |
+| `LINKEDIN_PERSON_URN` | Post author + picks the branding template | `posts.py`, `image_rendering.py` |
+| `LINKEDIN_USER_EMAIL` | Looked up in `users.email` to attach the post to a user row | `app/api/auth.py` |
+
+### Required only for the browser OAuth login flow
+
+`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_JWT_SECRET`,
+`OAUTH_REDIRECT_URI`, `SUPABASE_LINKEDIN_OIDC_PROVIDER`.
+
+Posting works without these. They only power `/api/v1/auth/linkedin/login`.
+
+### Branding
+
+| Key | Purpose |
+|---|---|
+| `CHETAN_PERSON_URN` | maps to `assets/branding/linkedin_template.png` — **blank** template, renderer draws name + role + badge + thought |
+| `PRANAV_PERSON_URN` | maps to `assets/branding/Pranav_Linkedin_Template.jpeg` — **prebranded**, renderer draws only the thought |
+| `PRANAV_THOUGHT_TOP_Y` | y-coord where the thought starts on the prebranded template (default `545`) |
+| `PROFILE_NAME` / `PROFILE_ROLE` | fallback identity, drawn **only** when the poster's URN is unregistered |
+| `FONTS_PATH` | `assets/fonts/` — must contain `Inter_18pt-SemiBold.ttf` |
+
+An empty URN is skipped at startup with a warning; that user falls back to the
+blank template. Mapping lives in `app/branding/config.py`.
+
+### Keys you may see but that do nothing
+
+`OPENAI_API_KEY`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL_NAME`, `CELERY_*`,
+`LOG_LEVEL`, `TEMPLATE_IMAGE_PATH`, `IMAGE_BRAND_COLOR`, `LINKEDIN_API_VERSION`,
+`LINKEDIN_POSTS_PER_DAY`, `TOKEN_REFRESH_*`, `SUPABASE_SERVICE_ROLE_KEY`.
+
+Two of these deserve a callout:
+
+- **`LANGCHAIN_*` (LangSmith tracing) is inert.** The LangSmith SDK reads
+  `os.environ`, but this app never calls `load_dotenv()` — pydantic-settings
+  keeps values on the `settings` object without exporting them to the process
+  environment, and `render.yaml` does not define them either. Tracing has been
+  silently off everywhere. To actually enable it, set them as **real** shell or
+  Render environment variables, not in `.env`.
+- **`LINKEDIN_CLIENT_ID` / `LINKEDIN_CLIENT_SECRET` are never read at runtime.**
+  The login flow is delegated to Supabase GoTrue, which stores its own copy.
+  You still need them to mint an access token by hand (section 6), so they are
+  kept in `.env` as reference.
+
+Sanity-check what actually loaded:
+
+```powershell
+python -c "from app.core.config import settings; print(settings.DATABASE_URL.split('@')[-1]); print('gemini:', bool(settings.GEMINI_API_KEY), '| groq:', bool(settings.GROQ_API_KEY)); print('urn:', settings.LINKEDIN_PERSON_URN); print('user email:', settings.LINKEDIN_USER_EMAIL)"
+```
 
 ---
 
-## Environment Configuration
+## 5. Supabase database
 
-### Step 1: Create `.env` File
+### Option A — reuse the existing project (recommended)
 
-Copy the `.env.example` template (if it exists) or create a new `.env` file in the project root:
+The live project is `buubdwydkzjuetybicby`. Its schema is already at head. If
+Pranav's machine points `DATABASE_URL` at it, nothing else is needed — skip to
+section 6. Both accounts can share it; posts are separated by `user_id`.
 
-```bash
-# On Windows (PowerShell)
-Copy-Item ".env.example" ".env"
+### Option B — a fresh Supabase project
 
-# On macOS/Linux
-cp .env.example .env
+1. supabase.com → **New Project**. Save the DB password.
+2. **Settings → Database → Connection string → Session pooler**. Copy it.
+3. Rewrite the scheme for async psycopg 3:
+   ```
+   postgresql://...        →   postgresql+psycopg_async://...
+   ```
+   Quote the whole value in `.env` if the password contains `$`, `@` or `#`.
+4. Run the migrations:
+   ```powershell
+   alembic upgrade head
+   ```
+   `alembic/env.py` calls `load_dotenv()` and reads `DATABASE_URL` directly, so
+   no extra config is needed.
+
+### Expected schema
+
+After `alembic upgrade head` the public schema holds:
+
+```
+alembic_version        current revision: 009_add_linkedin_provider_tokens
+users                  user_id, email (unique), full_name, linkedin_profile_url,
+                       access_token, refresh_token, token_expires_at,
+                       linkedin_access_token, linkedin_person_urn, timestamps
+posts                  post_id, user_id → users, topic, draft_content,
+                       final_content, ai_thought, status, idempotency_key,
+                       linkedin_post_id, published_at, image_url, asset_urn,
+                       char_count, category, llm_used, llm_fallback_used,
+                       tokens_used, execution_time_ms, error_reason, timestamps
+checkpoints            LangGraph state, auto-created on first agent run
+checkpoint_blobs
+checkpoint_writes
+checkpoint_migrations
 ```
 
-If `.env.example` doesn't exist, create `.env` manually:
+`status` is a plain varchar holding `queued` / `published` / `failed`
+(`PostStatus` in `app/db/models.py`).
 
-```bash
-touch .env  # macOS/Linux
-# or
-New-Item -ItemType File -Name ".env"  # Windows PowerShell
+Verify:
+
+```powershell
+python -c "import psycopg,os; from dotenv import load_dotenv; load_dotenv(); u=os.getenv('DATABASE_URL').strip('\"').replace('postgresql+psycopg_async://','postgresql://'); c=psycopg.connect(u,connect_timeout=20); cur=c.cursor(); cur.execute(\"select table_name from information_schema.tables where table_schema='public' order by 1\"); print([r[0] for r in cur.fetchall()])"
 ```
 
-### Step 2: Populate Environment Variables
+> **Note:** `app/api/main.py` also calls `Base.metadata.create_all()` on startup,
+> so tables appear even if you forget Alembic. Still run Alembic — `create_all`
+> does not apply column-level migrations to existing tables.
 
-Edit the `.env` file with your actual credentials. Here's a complete template with all required variables:
+---
+
+## 6. Getting a LinkedIn access token
+
+This is the token that publishes posts. It is a **member** token with a
+**2-month** lifetime (5,184,000 s, as shown on the app's Auth tab), so it must
+be regenerated roughly every 60 days.
+
+### 6.1 Prepare the LinkedIn app
+
+Go to https://www.linkedin.com/developers/apps → your app.
+
+**Products tab** — request and wait for approval on:
+
+| Product | Grants scopes |
+|---|---|
+| **Sign In with LinkedIn using OpenID Connect** | `openid`, `profile`, `email` — needed to read the Person URN |
+| **Share on LinkedIn** | `w_member_social` — needed to publish |
+
+Approval for these two is usually instant. Without `w_member_social` every
+publish returns `403 ACCESS_DENIED`.
+
+**Auth tab → Authorized redirect URLs** — must contain, exactly:
+
+```
+https://www.linkedin.com/developers/tools/oauth/redirect      ← required by the token generator
+https://<your-supabase-ref>.supabase.co/auth/v1/callback      ← Supabase OIDC login
+https://<your-render-app>.onrender.com/api/v1/auth/linkedin/callback
+http://localhost:8000/api/v1/auth/linkedin/callback           ← add this for local login testing
+```
+
+The first entry is the one people forget; the OAuth 2.0 token generator will not
+work without it.
+
+Also on the Auth tab: copy the **Client ID** and **Primary Client Secret**.
+
+> If two client secrets are active ("Multiple client secret keys have been active
+> since …"), delete the unused one. A rotated-but-not-deleted secret is a common
+> cause of intermittent `invalid_client` errors.
+
+### 6.2 Generate the token (easiest path)
+
+1. **Auth tab → OAuth 2.0 tools → Create token** (or go to
+   https://www.linkedin.com/developers/tools/oauth/token-generator).
+2. Select your app.
+3. Tick the scopes: `openid`, `profile`, `email`, `w_member_social`.
+4. Click **Request access token** → sign in as the account that will post →
+   **Allow**.
+5. Copy the `access_token` string. It is long (~500 chars) and starts with `AQ`.
+
+Paste it into `.env`:
 
 ```env
-################################
-# FastAPI & Server Configuration
-################################
-PROJECT_NAME=LinkedIn AI Agent
-PORT=8000
-
-################################
-# Database Configuration
-################################
-# CRITICAL: Use postgresql+psycopg_async:// for async SQLAlchemy + psycopg v3
-# Replace password, host, and port with your Supabase credentials
-DATABASE_URL=postgresql+psycopg_async://postgres.xxxxxx:YOUR_PASSWORD@db.xxxxx.supabase.co:5432/postgres?sslmode=require
-
-################################
-# Supabase (Optional, for auth)
-################################
-SUPABASE_URL=https://xxxxxx.supabase.co
-SUPABASE_ANON_KEY=your_anon_key_here
-SUPABASE_JWT_SECRET=your_jwt_secret_here
-
-################################
-# LLM Configuration (Primary)
-################################
-# Google Gemini API Key (free tier: 60 requests/minute)
-GEMINI_API_KEY=your_gemini_api_key_here
-GEMINI_MODEL_NAME=gemini-3.5-flash
-
-################################
-# LLM Fallback Configuration (Ollama)
-################################
-# Only needed if running Ollama locally
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL_NAME=gemma3:4b
-
-################################
-# LangSmith Observability
-################################
-# Recommended for debugging and monitoring LLM calls
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
-LANGCHAIN_API_KEY=your_langsmith_api_key_here
-LANGCHAIN_PROJECT=linkedin-content-agent
-
-################################
-# LinkedIn OAuth & Publishing
-################################
-# Obtain from LinkedIn Developer Console
-LINKEDIN_CLIENT_ID=your_client_id
-LINKEDIN_CLIENT_SECRET=your_client_secret
-LINKEDIN_ACCESS_TOKEN=your_access_token_here
-LINKEDIN_PERSON_URN=urn:li:person:xxxxxxxxxxxxx
-
-# LinkedIn API Configuration
-LINKEDIN_API_VERSION=v2
-LINKEDIN_MAX_RETRIES=3
-LINKEDIN_RETRY_BACKOFF=2.0
-LINKEDIN_POSTS_PER_DAY=100
-
-################################
-# Image Rendering Configuration (Branding)
-################################
-PROFILE_NAME=Your Name
-PROFILE_ROLE=Your Role (e.g., Gen AI Engineer)
-TEMPLATE_IMAGE_PATH=assets/branding/linkedin_template.png
-FONTS_PATH=assets/fonts/
-IMAGE_BRAND_COLOR=#0077B5
-
-################################
-# Concurrency & Rate Limiting
-################################
-MAX_CONCURRENT_LLM_CALLS=2
-
-################################
-# Logging
-################################
-LOG_LEVEL=INFO
-
-################################
-# Redis (Optional, for background tasks)
-################################
-CELERY_BROKER_URL=redis://redis:6379/0
-CELERY_RESULT_BACKEND=redis://redis:6379/0
+LINKEDIN_ACCESS_TOKEN=AQV...
 ```
 
-### Step 3: Verify Environment Variables Are Loaded
+### 6.3 Manual OAuth flow (alternative)
 
-Test that your `.env` file is correctly loaded:
+If the generator is unavailable:
 
-```bash
-python -c "
-from dotenv import load_dotenv
-import os
-load_dotenv()
-print('✅ DATABASE_URL:', os.getenv('DATABASE_URL')[:50] + '...' if os.getenv('DATABASE_URL') else '❌ Not set')
-print('✅ GEMINI_API_KEY:', 'Set' if os.getenv('GEMINI_API_KEY') else '❌ Not set')
-print('✅ LANGCHAIN_API_KEY:', 'Set' if os.getenv('LANGCHAIN_API_KEY') else '❌ Not set')
-"
+**Step 1** — open this in a browser (one line, URL-encoded redirect):
+
+```
+https://www.linkedin.com/oauth/v2/authorization
+  ?response_type=code
+  &client_id=<LINKEDIN_CLIENT_ID>
+  &redirect_uri=http%3A%2F%2Flocalhost%3A8000%2Fapi%2Fv1%2Fauth%2Flinkedin%2Fcallback
+  &scope=openid%20profile%20email%20w_member_social
+  &state=random123
 ```
 
-You should see "✅ Set" for critical variables. If you see "❌ Not set", revisit your `.env` file.
+Approve, then copy the `code=` value from the URL you land on.
+
+**Step 2** — exchange it (PowerShell):
+
+```powershell
+$body = @{
+  grant_type    = 'authorization_code'
+  code          = '<PASTE_CODE>'
+  redirect_uri  = 'http://localhost:8000/api/v1/auth/linkedin/callback'
+  client_id     = '<LINKEDIN_CLIENT_ID>'
+  client_secret = '<LINKEDIN_CLIENT_SECRET>'
+}
+Invoke-RestMethod -Method Post -Uri 'https://www.linkedin.com/oauth/v2/accessToken' -Body $body
+```
+
+The `access_token` field of the response is what you want. The `code` is
+single-use and expires in ~30 seconds — if you get `invalid_grant`, redo step 1.
+
+### 6.4 Verify the token works
+
+```powershell
+$t = '<ACCESS_TOKEN>'
+Invoke-RestMethod -Uri 'https://api.linkedin.com/v2/userinfo' -Headers @{ Authorization = "Bearer $t" }
+```
+
+A JSON body with `sub`, `name`, `email` means the token is live.
+`401` means expired or malformed; `403` means a missing scope.
 
 ---
 
-## Database Migrations via Alembic
+## 7. Getting the LinkedIn Person URN
 
-Alembic manages your database schema changes. You must run migrations to create the required tables.
+The URN is derived from the token — it is **not** the vanity slug in your
+profile URL.
 
-### Step 1: Verify Migration Files
+```powershell
+$t = '<ACCESS_TOKEN>'
+$me = Invoke-RestMethod -Uri 'https://api.linkedin.com/v2/userinfo' -Headers @{ Authorization = "Bearer $t" }
+$me | ConvertTo-Json
+"urn:li:person:$($me.sub)"
+```
 
-List all migration files:
+curl equivalent:
 
 ```bash
-ls -la alembic/versions/  # macOS/Linux
-Get-ChildItem alembic/versions/  # Windows PowerShell
+curl -s -H "Authorization: Bearer $T" https://api.linkedin.com/v2/userinfo
 ```
 
-You should see files like:
-- `001_init_init_supabase_schema.py`
-- `002_add_missing_post_columns.py`
-- etc.
+Response:
 
-### Step 2: Configure Alembic for Your Database
-
-1. Open `alembic/env.py`
-2. Locate the `sqlalchemy.url` configuration (around line 25–30)
-3. Ensure it reads your `DATABASE_URL` from environment:
-   ```python
-   from app.core.config import settings
-   config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
-   ```
-4. Save the file
-
-### Step 3: Run Migrations Against Supabase
-
-Execute all pending migrations:
-
-```bash
-alembic upgrade head
+```json
+{
+  "sub": "qd_C3vqY6T",
+  "name": "…",
+  "given_name": "…",
+  "family_name": "…",
+  "email": "…"
+}
 ```
 
-**Expected output:**
-```
-INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
-INFO  [alembic.runtime.migration] Will assume transactional DDL.
-INFO  [alembic.runtime.migration] Running upgrade ... -> 001_init_init_supabase_schema.py
-INFO  [alembic.runtime.migration] Running upgrade 001... -> 002_add_missing_post_columns.py
-...
-INFO  [alembic.runtime.migration] Done.
+Take `sub` and prefix it:
+
+```env
+LINKEDIN_PERSON_URN=urn:li:person:qd_C3vqY6T
 ```
 
-### Step 4: Verify Tables Were Created
+The `urn:li:person:` prefix is required. `posts.py` will prepend it if missing,
+but `app/branding/config.py` rejects any URN without it — so a bare `sub` value
+silently loses the branding template. Always store the full form.
 
-Check that tables exist in Supabase:
-
-```bash
-python -c "
-from sqlalchemy import create_engine, inspect, text
-from app.core.config import settings
-
-engine = create_engine(settings.DATABASE_URL)
-with engine.connect() as conn:
-    inspector = inspect(engine)
-    tables = inspector.get_table_names()
-    print('✅ Tables in database:', tables)
-"
-```
-
-You should see: `['users', 'posts', ...]`
-
-**Troubleshooting Migration Issues:**
-
-If you encounter errors:
-
-1. **Connection Error:** Verify `DATABASE_URL` is correct and Supabase is running
-   ```bash
-   python -c "from app.core.config import settings; print(settings.DATABASE_URL)"
-   ```
-
-2. **Permission Denied:** Ensure your database user has CREATE TABLE privileges (usually does by default on Supabase)
-
-3. **Table Already Exists:** If a table already exists from a prior run, Alembic skips it. This is safe.
-
-4. **Rollback a Migration (if needed):**
-   ```bash
-   alembic downgrade -1  # Rolls back 1 migration
-   alembic downgrade base  # Rolls back all migrations
-   ```
+> `/v2/me` is the older endpoint and needs the legacy `r_liteprofile` scope,
+> which is no longer granted to new apps. Use `/v2/userinfo`.
 
 ---
 
-## Running the Application Locally
+## 8. Seeding the user row (required)
 
-### Step 1: Start the FastAPI Server
+`POST /api/v1/posts/generate` inserts `posts.user_id = current_user.user_id`,
+and `posts.user_id` is `NOT NULL`.
 
-Ensure your virtual environment is active (you should see `(.venv)` in your terminal prompt).
+`app/api/auth.py::get_current_user` resolves that user as follows:
 
-```bash
+```
+look up users WHERE email = LINKEDIN_USER_EMAIL
+  ├─ found AND linkedin_access_token IS NOT NULL  → use that row  ✅
+  └─ otherwise → build an in-memory User with user_id = None      ❌
+                 → insert fails: null value in column "user_id"
+```
+
+**So the `users` row must exist and its `linkedin_access_token` column must be
+non-NULL.** Both conditions. A row whose `linkedin_access_token` is NULL fails
+exactly the same way as a missing row.
+
+Run this once in the **Supabase SQL Editor**, substituting your values:
+
+```sql
+insert into users (email, full_name, linkedin_profile_url,
+                   linkedin_access_token, linkedin_person_urn)
+values ('you@example.com',
+        'Your Name',
+        'https://linkedin.com/in/your-vanity-name',
+        'AQV...your access token...',
+        'urn:li:person:XXXXXXXX')
+on conflict (email) do update set
+  full_name             = excluded.full_name,
+  linkedin_profile_url  = excluded.linkedin_profile_url,
+  linkedin_access_token = excluded.linkedin_access_token,
+  linkedin_person_urn   = excluded.linkedin_person_urn,
+  updated_at            = now();
+```
+
+The `email` here must match `LINKEDIN_USER_EMAIL` in `.env` **character for
+character**. Confirm:
+
+```sql
+select user_id, email, full_name,
+       (linkedin_access_token is not null) as has_token,
+       linkedin_person_urn
+from users order by user_id;
+```
+
+`has_token` must be `true` for your row.
+
+> The token stored in this column is not what publishes the post — the env var
+> is. It functions here as the "this user is provisioned" flag. Keeping the two
+> in sync avoids confusion later.
+
+### Current state (as of 2026-08-07)
+
+```
+user_id | email                  | full_name | has_token | posts
+--------+------------------------+-----------+-----------+------
+      2 | chetuvinay08@gmail.com | CHETAN P  | true      |     9
+```
+
+Two corrections were applied on this date:
+
+- **`vinayuttangi@gmail.com` → `chetuvinay08@gmail.com`.** That row held the
+  token for `urn:li:person:qd_C3vqY6T`, but `GET /v2/userinfo` on that token
+  returns `sub: qd_C3vqY6T, name: CHETAN P, email: chetuvinay08@gmail.com` — the
+  email on the row was simply wrong. Corrected in place, so `user_id = 2` and
+  its 9 posts were preserved.
+- **`chetan@example.com` (user_id 1) deleted**, cascading its 40 posts.
+
+⚠️ **Side effect of that deletion:** topic dedup queries *all* posts globally
+with no user filter (`select_topic_autonomously()` in
+`app/agent/nodes/topic_selection.py` — it reads the last 100 posts regardless of
+owner). The distinct-topic pool dropped **42 → 7**, so the agent has lost most
+of its memory of what it has already published and will begin repeating topics
+sooner than before. It degrades gracefully — no errors, just repetition — and
+rebuilds naturally as new posts accumulate.
+
+A full pre-change snapshot of both tables is at
+`backup_users_posts_2026-08-07.sql` in the repo root. It restores users *and*
+posts, so replaying it recovers the dedup history:
+
+```powershell
+# restore if needed (psql, or paste into the Supabase SQL Editor)
+psql "<libpq-connection-string>" -f backup_users_posts_2026-08-07.sql
+```
+
+That file contains a plaintext LinkedIn access token — it is covered by
+`backup_*.sql` in `.gitignore`. Keep it out of version control and off shared
+drives.
+
+---
+
+## 9. Run and verify locally
+
+```powershell
+.\.venv\Scripts\Activate.ps1
 uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-**Parameters explained:**
-- `app.api.main:app` — Points to the FastAPI app instance in `app/api/main.py`
-- `--host 0.0.0.0` — Listen on all network interfaces
-- `--port 8000` — Run on localhost:8000
-- `--reload` — Auto-restart on code changes (development only)
+Healthy startup:
 
-**Expected output:**
-```
-INFO:     Uvicorn running on http://0.0.0.0:8000
-INFO:     Application startup complete
-[OK] Database initialized
-```
-
-### Step 2: Test the Health Endpoint
-
-In a new terminal (keeping the Uvicorn server running), test the health endpoint:
-
-```bash
-curl http://localhost:8000/health
-```
-
-**Expected response:**
-```json
-{
-  "status": "ok",
-  "database": "supabase",
-  "agent": "langgraph"
-}
-```
-
-### Step 3: Explore the API Documentation
-
-Open your browser and visit:
-
-```
-http://localhost:8000/docs
-```
-
-This opens the interactive **Swagger UI** where you can:
-- View all endpoints
-- Test API calls directly
-- See request/response schemas
-
-### Step 4: Test a Simple Request (Optional)
-
-To generate a LinkedIn post, make a POST request:
-
-```bash
-curl -X POST http://localhost:8000/api/v1/posts/generate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": 1,
-    "topic": "Distributed Systems"
-  }'
-```
-
-**Expected response:**
-```json
-{
-  "post_id": 1,
-  "topic": "Distributed Systems",
-  "status": "queued",
-  "created_at": "2026-07-27T10:30:00Z"
-}
-```
-
-### Step 5: Stop the Server
-
-Press `Ctrl+C` in the terminal running Uvicorn.
-
----
-
-## Production Deployment (Render)
-
-Render is a cloud platform that auto-deploys your app when you push to GitHub.
-
-### Step 1: Push Your Repository to GitHub
-
-If you haven't already, push your code to GitHub:
-
-```bash
-git add .
-git commit -m "Initial commit: LinkedIn Post Agent setup"
-git push -u origin main
-```
-
-### Step 2: Create a Render Account
-
-1. Go to [render.com](https://render.com/)
-2. Click **"Sign Up"** and authenticate with GitHub
-3. Grant Render permission to access your GitHub repositories
-
-### Step 3: Create a New Web Service
-
-1. In Render dashboard, click **"New +"** → **"Web Service"**
-2. Select your `linkedin-post-agent` repository
-3. Fill in the configuration:
-   - **Name:** `linkedin-post-agent`
-   - **Environment:** `Python 3`
-   - **Region:** Choose closest to your users
-   - **Branch:** `main`
-   - **Build Command:**
-     ```
-     pip install -r requirements.txt
-     ```
-   - **Start Command:**
-     ```
-     alembic upgrade head && uvicorn app.api.main:app --host 0.0.0.0 --port $PORT
-     ```
-   - **Instance Type:** `Standard` (free tier available)
-
-### Step 4: Set Environment Variables on Render
-
-1. In the Render web service settings, scroll to **"Environment"**
-2. Add each variable from your `.env` file:
-   - Click **"Add Environment Variable"** for each entry
-   - Copy from your local `.env` file
-
-   **Critical variables:**
-   - `DATABASE_URL` (use your Supabase connection string)
-   - `GEMINI_API_KEY`
-   - `LANGCHAIN_API_KEY`
-   - `LINKEDIN_ACCESS_TOKEN`
-   - `LINKEDIN_PERSON_URN`
-   - (and all others from your `.env`)
-
-3. Click **"Save"**
-
-### Step 5: Deploy
-
-1. Scroll down and click **"Create Web Service"**
-2. Render will immediately start building and deploying
-3. Watch the logs in real-time:
-   - **Build logs** show pip installations
-   - **Deployment logs** show server startup
-   - **Runtime logs** show API requests
-
-**Expected output (in logs):**
 ```
 [OK] Database initialized
-INFO:     Uvicorn running on http://0.0.0.0:8000
+[OK] Branding templates registered
+INFO:     Application startup complete.
 ```
 
-### Step 6: Access Your Deployed App
+A line like `No URN configured for Pranav kumar. Skipping registration` is
+expected whenever `PRANAV_PERSON_URN` is blank.
 
-1. Once deployment completes, Render provides a URL: `https://linkedin-post-agent.onrender.com`
-2. Test the health endpoint:
-   ```
-   https://linkedin-post-agent.onrender.com/health
-   ```
-3. Access Swagger UI:
-   ```
-   https://linkedin-post-agent.onrender.com/docs
-   ```
+### Checks, in order
 
-### Step 7: Enable Auto-Deploy on Git Push
+**1. Health**
 
-By default, Render redeploys on every push to `main`. To verify:
+```powershell
+Invoke-RestMethod http://localhost:8000/health
+```
+→ `{ status = ok; database = supabase; agent = langgraph }`
 
-1. In Render web service settings, check **"Auto-Deploy"** is enabled
-2. On each `git push origin main`, Render automatically rebuilds and redeploys
+**2. Swagger** — http://localhost:8000/docs
 
----
+Note: `get_current_user` does not verify the Bearer header at all; it resolves
+the user from `LINKEDIN_USER_EMAIL`. Endpoints are callable from Swagger with no
+token. Do not treat this deployment as access-controlled.
 
-## Troubleshooting
+**3. Generate a post — this publishes for real**
 
-### Issue: `ModuleNotFoundError: No module named 'fastapi'`
-
-**Solution:** Ensure your virtual environment is activated:
-```bash
-# Windows
-.\.venv\Scripts\Activate.ps1
-
-# macOS/Linux
-source .venv/bin/activate
+```powershell
+Invoke-RestMethod -Method Post http://localhost:8000/api/v1/posts/generate `
+  -ContentType 'application/json' `
+  -Body '{"idempotency_key":"manual-test-1"}'
 ```
 
-Then reinstall dependencies:
-```bash
-pip install -r requirements.txt
+Returns `202` immediately with a `post_id`; the work happens in the background.
+The request body takes only `idempotency_key` — the topic is chosen by the
+agent. Reusing a key returns the existing post instead of publishing twice.
+
+**4. Poll the result**
+
+```powershell
+Invoke-RestMethod http://localhost:8000/api/v1/posts/3
 ```
 
----
-
-### Issue: `psycopg3 version conflict` or `connection refused`
-
-**Solution:** Verify your `DATABASE_URL` uses the correct async driver:
-```
-postgresql+psycopg_async://...
-```
-(not `postgresql+asyncpg://` or plain `postgresql://`)
-
-Test the connection:
-```bash
-python -c "
-from sqlalchemy import create_engine
-from app.core.config import settings
-engine = create_engine(settings.DATABASE_URL)
-print('✅ Connection successful' if engine else '❌ Failed')
-"
-```
+Watch `status` go `queued` → `published`. On `failed`, `error_reason` carries
+the cause. A rendered image lands in `assets/generated_images/`, and the server
+log prints the full LinkedIn request and response payloads.
 
 ---
 
-### Issue: `alembic upgrade head` hangs or times out
+## 10. Switching the agent to Pranav Kumar
 
-**Solution:** This usually indicates a network issue with Supabase. Try:
+Everything above, applied concretely. Do these in order on Pranav's laptop.
 
-1. **Check Supabase is running:**
-   - Log in to Supabase dashboard
-   - Verify project status is "Active"
+### Step 1 — LinkedIn app
 
-2. **Increase timeout:**
-   ```bash
-   # Set a longer timeout (in seconds)
-   PGCONNECT_TIMEOUT=30 alembic upgrade head
-   ```
+Either add Pranav as a **Team member** on the existing app (`86npl3qgvcikkt`),
+or register a new app under Pranav's company page. Either way, follow
+[section 6.1](#61-prepare-the-linkedin-app): both products approved, and the
+four redirect URLs present.
 
-3. **Verify credentials:**
-   ```bash
-   python -c "from app.core.config import settings; print(settings.DATABASE_URL[:60])"
-   ```
+If Pranav uses a **new** app, note the new Client ID and Primary Client Secret.
 
-4. **Manually test SQL connection:**
-   ```bash
-   python -c "
-   from sqlalchemy import create_engine, text
-   from app.core.config import settings
-   engine = create_engine(settings.DATABASE_URL)
-   with engine.connect() as conn:
-       result = conn.execute(text('SELECT 1'))
-       print('✅ Connected')
-   "
-   ```
+### Step 2 — Mint Pranav's token and read his URN
 
----
+Sign in **as Pranav** in the token generator ([6.2](#62-generate-the-token-easiest-path)),
+scopes `openid profile email w_member_social`. Then run
+[section 7](#7-getting-the-linkedin-person-urn) with that token to get `sub`.
 
-### Issue: `GEMINI_API_KEY not found` at runtime
+Keep both values handy:
 
-**Solution:** Verify your `.env` file exists in the project root:
-```bash
-ls -la .env  # macOS/Linux
-Get-ChildItem .env  # Windows
+```
+LINKEDIN_ACCESS_TOKEN = AQV...          (Pranav's)
+LINKEDIN_PERSON_URN   = urn:li:person:<sub>
 ```
 
-If it doesn't exist, create it following the [Environment Configuration](#environment-configuration) section.
+### Step 3 — `.env` on Pranav's machine
 
-Ensure Pydantic is loading environment variables:
-```bash
-python -c "
-from dotenv import load_dotenv
-from app.core.config import settings
-load_dotenv()
-print('GEMINI_API_KEY:', '✅ Loaded' if settings.GEMINI_API_KEY else '❌ Not set')
-"
+```env
+# --- publishing identity ---------------------------------------------------
+LINKEDIN_ACCESS_TOKEN=AQV...pranav-token...
+LINKEDIN_PERSON_URN=urn:li:person:<pranav-sub>
+
+# --- LinkedIn app (reference only; app doesn't read these at runtime) -------
+LINKEDIN_CLIENT_ID=<pranav-client-id>
+LINKEDIN_CLIENT_SECRET=<pranav-client-secret>
+
+# --- which users row to attach posts to ------------------------------------
+LINKEDIN_USER_EMAIL=pranavkumarpk0107@gmail.com
+LINKEDIN_USER_NAME=Pranav Kumar
+LINKEDIN_PROFILE_URL=https://linkedin.com/in/<pranav-vanity>
+
+# --- branding: THIS is what selects the prebranded template -----------------
+PRANAV_PERSON_URN=urn:li:person:<pranav-sub>     # same value as LINKEDIN_PERSON_URN
+CHETAN_PERSON_URN=urn:li:person:qd_C3vqY6T       # leave; harmless when unused
 ```
 
+Leave `DATABASE_URL`, `SUPABASE_*`, `GEMINI_API_KEY`, `GROQ_API_KEY` as they are
+if reusing the existing project.
+
+**`PRANAV_PERSON_URN` must equal `LINKEDIN_PERSON_URN` exactly.** That equality
+is the entire branding switch: `image_rendering.py` looks up the posting URN in
+the registry built by `app/branding/config.py`. Match → `Pranav_Linkedin_Template.jpeg`,
+thought only. No match → blank template with `PROFILE_NAME` ("Chetan P") drawn on it.
+
+Confirm the mapping registered at startup — the log must show:
+
+```
+Registered branding for Pranav kumar | urn=urn:li:person:… | template=assets/branding/Pranav_Linkedin_Template.jpeg (prebranded)
+```
+
+### Step 4 — Seed Pranav's `users` row
+
+```sql
+insert into users (email, full_name, linkedin_profile_url,
+                   linkedin_access_token, linkedin_person_urn)
+values ('pranavkumarpk0107@gmail.com',
+        'Pranav Kumar',
+        'https://linkedin.com/in/<pranav-vanity>',
+        'AQV...pranav-token...',
+        'urn:li:person:<pranav-sub>')
+on conflict (email) do update set
+  linkedin_access_token = excluded.linkedin_access_token,
+  linkedin_person_urn   = excluded.linkedin_person_urn,
+  updated_at            = now();
+```
+
+Skipping this produces `null value in column "user_id" violates not-null
+constraint` on the very first generate call.
+
+### Step 5 — Supabase (only if the browser login flow is needed)
+
+Dashboard → **Authentication → Providers → LinkedIn (OIDC)** → set Pranav's
+Client ID and Secret → save. Then make sure
+`https://buubdwydkzjuetybicby.supabase.co/auth/v1/callback` is in the LinkedIn
+app's redirect URLs.
+
+Not needed for publishing — only for `/api/v1/auth/linkedin/login`.
+
+### Step 6 — Verify before touching Render
+
+Run locally and generate one post ([section 9](#9-run-and-verify-locally)).
+Confirm on Pranav's feed that:
+
+- the post appeared on **Pranav's** profile, and
+- the image uses the prebranded template (no "Chetan P" text drawn on it).
+
+Only then update production.
+
+### Step 7 — Update Render
+
+[Section 11](#11-rendercom-deployment).
+
+### Checklist
+
+- [ ] `w_member_social` + OpenID Connect approved on the LinkedIn app
+- [ ] All four redirect URLs present
+- [ ] Token minted while signed in **as Pranav**
+- [ ] `LINKEDIN_ACCESS_TOKEN` replaced
+- [ ] `LINKEDIN_PERSON_URN` = `urn:li:person:<sub>` (full prefix)
+- [ ] `PRANAV_PERSON_URN` identical to `LINKEDIN_PERSON_URN`
+- [ ] `LINKEDIN_USER_EMAIL` set to Pranav's email
+- [ ] `users` row exists with non-NULL `linkedin_access_token`
+- [ ] Startup log shows the prebranded template registered
+- [ ] One test post verified on Pranav's feed
+- [ ] Render env vars updated to match
+
 ---
 
-### Issue: Render deployment fails with `Build failed`
+## 11. Render.com deployment
 
-**Solution:** Check the build logs in Render:
+The service is already live (`linkedin-post-agent-xyrp.onrender.com`), defined
+by `render.yaml`: a `web` service plus a `cron` service on `0 9 * * 1,3,5`.
 
-1. Click **"Logs"** in your Render web service
-2. Look for errors like:
-   - `pip install failed` → Verify all dependencies in `requirements.txt` are available
-   - `Python 3.12 not available` → Change **Instance Type** to ensure Python 3.12+ is used
-   - `DATABASE_URL not found` → Add environment variables to Render dashboard
+### Switching the live service to Pranav
 
-3. **Redeploy manually:**
-   - In Render dashboard, click **"Manual Deploy"** → **"Deploy latest commit"**
+Render Dashboard → **linkedin-agent** → **Environment**. Update:
+
+| Key | Value |
+|---|---|
+| `LINKEDIN_ACCESS_TOKEN` | Pranav's token |
+| `LINKEDIN_PERSON_URN` | `urn:li:person:<pranav-sub>` |
+| `PRANAV_PERSON_URN` | same value again |
+| `LINKEDIN_USER_EMAIL` | `pranavkumarpk0107@gmail.com` — **add this**, see below |
+
+Then **Manual Deploy → Deploy latest commit** (env changes alone trigger a
+restart, but a deploy is unambiguous).
+
+> **`LINKEDIN_USER_EMAIL` is missing from `render.yaml`.** Because it is absent,
+> production falls back to the hardcoded default in `app/core/config.py`. That
+> default is stale, so this key **must** be set explicitly in the Render
+> dashboard — to `chetuvinay08@gmail.com` today, to Pranav's email after the
+> switch. Otherwise scheduled posts attach to the wrong user or fail outright.
+>
+> Consider adding it to `render.yaml` under the web service as `sync: false`
+> so the next Blueprint deploy does not lose it.
+
+Also confirm the LinkedIn app lists
+`https://linkedin-post-agent-xyrp.onrender.com/api/v1/auth/linkedin/callback`
+as an authorized redirect URL.
+
+### Verify production
+
+```powershell
+Invoke-RestMethod https://linkedin-post-agent-xyrp.onrender.com/health
+```
+
+To force a post outside the schedule, run the same script the cron job runs:
+
+```powershell
+$env:APP_BASE_URL = 'https://linkedin-post-agent-xyrp.onrender.com'
+python scripts/scheduled_post.py
+```
+
+It uses `scheduled-<UTC-date>` as the idempotency key, so a second run on the
+same day is a no-op rather than a duplicate post.
+
+### Cron job setup on Render
+
+The recurring trigger is a **separate Render service** (`type: cron`), not a
+thread inside the web app. It runs `scripts/scheduled_post.py`, which does one
+thing: `POST /api/v1/posts/generate` against the web service. All intelligence —
+topic choice, the 14-domain whitelist, weekly diversity — lives in the agent, so
+the schedule stays dumb.
+
+```
+Render cron (0 9 * * 1,3,5 UTC)
+   └─ python scripts/scheduled_post.py
+        └─ POST https://<web-service>/api/v1/posts/generate
+             body: {"idempotency_key": "scheduled-YYYY-MM-DD"}
+```
+
+#### Option A — Blueprint (recommended, already defined)
+
+`render.yaml` declares both services. Render Dashboard → **New → Blueprint** →
+point at this repo → Apply. The cron service is created automatically and
+`APP_BASE_URL` is wired to the web service host by Render itself:
+
+```yaml
+- key: APP_BASE_URL
+  fromService:
+    type: web
+    name: linkedin-agent
+    property: host
+```
+
+`property: host` returns a bare hostname with no scheme; `_base_url()` in the
+script prepends `https://`. Nothing to fill in by hand.
+
+#### Option B — create the cron job manually in the dashboard
+
+If the Blueprint was not used (e.g. the web service was created by hand):
+
+1. Dashboard → **New +** → **Cron Job**
+2. Connect the same repository, branch `main`
+3. Fill in:
+
+   | Field | Value |
+   |---|---|
+   | Name | `linkedin-agent-cron` |
+   | Region | same as the web service (`oregon`) |
+   | Runtime | Python 3 |
+   | Build Command | `pip install --upgrade pip && pip install httpx` |
+   | Command | `python scripts/scheduled_post.py` |
+   | Schedule | `0 9 * * 1,3,5` |
+
+4. **Environment** → add:
+
+   | Key | Value |
+   |---|---|
+   | `PYTHON_VERSION` | `3.11.9` |
+   | `APP_BASE_URL` | `https://linkedin-post-agent-xyrp.onrender.com` |
+   | `REQUEST_TIMEOUT_SECONDS` | `60` |
+
+5. **Create Cron Job**
+
+The cron service needs **no** LinkedIn, Gemini, Supabase or database
+credentials. It only makes an unauthenticated HTTP call; every secret lives on
+the web service. Do not duplicate them here.
+
+#### Schedule syntax
+
+Standard 5-field cron, always **UTC** — Render has no timezone setting.
+
+| Schedule | Meaning |
+|---|---|
+| `0 9 * * 1,3,5` | 09:00 UTC Mon/Wed/Fri (current — 2:30 PM IST) |
+| `0 4 * * 1-5` | 04:00 UTC every weekday (9:30 AM IST) |
+| `30 3 * * *` | 03:30 UTC daily (9:00 AM IST) |
+
+IST is UTC+5:30, so subtract 5h30m from your desired local time. Changing the
+cadence is safe: the agent enforces one distinct domain per post within a
+calendar week regardless of when it fires.
+
+To change it, edit `schedule` in `render.yaml` and redeploy the Blueprint, or
+edit **Settings → Schedule** on the cron service directly.
+
+#### Safety and verification
+
+- **Double-fire protection is built in.** The key is
+  `scheduled-<UTC-date>`, so a Render retry or a manual run on the same day
+  returns the existing post instead of publishing twice
+  (`_idempotency_key()` in the script).
+- **Retries:** 3 attempts, 10s/20s backoff. It gives up immediately on any 4xx
+  other than 429, since those never succeed on retry.
+- **Cron jobs are a paid Render feature** — `plan: starter`. There is no free
+  tier for `type: cron`.
+- **Cold starts:** if the web service has spun down, the first request can take
+  ~50s. That is why the timeout is 60s with retries.
+
+Run it on demand without waiting for the schedule:
+
+```powershell
+$env:APP_BASE_URL = 'https://linkedin-post-agent-xyrp.onrender.com'
+python scripts/scheduled_post.py
+```
+
+Or in the dashboard: cron service → **Trigger Run**. Check **Logs** for:
+
+```
+[cron] Triggering scheduled post
+[cron]   target          : https://…/api/v1/posts/generate
+[cron]   idempotency_key : scheduled-2026-08-07
+[cron] SUCCESS (attempt 1) | status=202 post_id=51 state=queued
+```
+
+A `202` only means the job was *accepted*. The publish happens in the web
+service's background task — confirm the outcome in the web service logs or via
+`GET /api/v1/posts/<id>`.
+
+### Rendered images are ephemeral
+
+`image_rendering.py` writes to `assets/generated_images/` on local disk. Render's
+filesystem is wiped on every deploy and restart. The image is uploaded to
+LinkedIn immediately, so this does not affect posting — but `posts.image_url`
+points at a path that will not exist later. Do not build anything that reads it
+back.
 
 ---
 
-### Issue: LinkedIn posts fail to publish
+## 12. Troubleshooting
 
-**Solution:**
+**`null value in column "user_id" violates not-null constraint`**
+The `users` row for `LINKEDIN_USER_EMAIL` is missing, or its
+`linkedin_access_token` is NULL. See [section 8](#8-seeding-the-user-row-required).
+This is by far the most common first-run failure.
 
-1. **Verify credentials in `.env`:**
-   ```bash
-   python -c "
-   from app.core.config import settings
-   print('LINKEDIN_ACCESS_TOKEN:', '✅' if settings.LINKEDIN_ACCESS_TOKEN else '❌ Missing')
-   print('LINKEDIN_PERSON_URN:', '✅' if settings.LINKEDIN_PERSON_URN else '❌ Missing')
-   "
-   ```
+**Post publishes but the image says "Chetan P"**
+`PRANAV_PERSON_URN` does not exactly equal `LINKEDIN_PERSON_URN`, so the blank
+template was used and `PROFILE_NAME` was drawn onto it. Compare both strings
+including the `urn:li:person:` prefix, restart, and check the startup log for
+`Registered branding for Pranav kumar`.
 
-2. **Check token expiration:**
-   - LinkedIn access tokens expire after a period
-   - Refresh via LinkedIn OAuth flow or manual token generation
+**LinkedIn `401 Unauthorized` on publish**
+Token expired — member tokens last 2 months. Re-mint
+([section 6.2](#62-generate-the-token-easiest-path)) and update `.env` *and*
+Render. There is no auto-refresh for the publishing token.
 
-3. **Review LangSmith logs:**
-   - If `LANGCHAIN_API_KEY` is set, view traces at [smith.langchain.com](https://smith.langchain.com/)
-   - Filter by project `linkedin-content-agent` to see detailed error messages
+**LinkedIn `403 ACCESS_DENIED`**
+`w_member_social` was not granted. The "Share on LinkedIn" product must be
+approved *and* the scope ticked when the token was created. Adding the product
+later does not upgrade an already-issued token — mint a new one.
+
+**Post published as text with no image**
+Image upload failed and the code fell back to text-only, by design
+(`posts.py`). Search the logs for `Image upload/publishing FAILED`. Usual
+causes: the template file is missing, or `assets/fonts/Inter_18pt-SemiBold.ttf`
+is absent.
+
+**`ModuleNotFoundError` / `psycopg` errors on Windows**
+Activate the venv. If the error mentions the event loop, the entry point is
+missing the `WindowsSelectorEventLoopPolicy` call that `app/api/main.py` makes.
+
+**`alembic upgrade head` hangs**
+Supabase free-tier projects pause after inactivity — open the dashboard to wake
+it. Also confirm the password in `DATABASE_URL` is quoted if it contains `$`.
+
+**Status stuck at `queued`**
+The background task died before writing a status. Check the server log for the
+`[POST-<id>]` correlation-id trace; every node logs entry and exit under it.
+
+**No LangSmith traces**
+Expected — see [section 4](#keys-you-may-see-but-that-do-nothing). Tracing is
+not wired up.
+
+**Duplicate posts**
+Always send an `idempotency_key`. Without one, every call publishes.
 
 ---
 
-## Next Steps
+## Quick reference
 
-Once you've completed this setup:
+```powershell
+# run
+uvicorn app.api.main:app --reload --port 8000
 
-1. **Test Locally:** Generate a few posts locally using the Swagger UI at `http://localhost:8000/docs`
-2. **Deploy:** Push to GitHub to trigger Render deployment
-3. **Monitor:** Check LangSmith (if enabled) for LLM call traces
-4. **Configure Scheduling:** Set up scheduled posts via a cron job or task scheduler
-5. **Scale:** Monitor Render logs for performance; upgrade instance type if needed
+# migrate
+alembic upgrade head
 
----
+# generate one post
+Invoke-RestMethod -Method Post http://localhost:8000/api/v1/posts/generate `
+  -ContentType 'application/json' -Body '{"idempotency_key":"test-1"}'
 
-## Support & Resources
+# check a post
+Invoke-RestMethod http://localhost:8000/api/v1/posts/<id>
 
-- **FastAPI Docs:** [fastapi.tiangolo.com](https://fastapi.tiangolo.com/)
-- **SQLAlchemy Docs:** [sqlalchemy.org](https://docs.sqlalchemy.org/)
-- **LangChain Docs:** [python.langchain.com](https://python.langchain.com/)
-- **LangGraph Docs:** [langchain-ai.github.io/langgraph](https://langchain-ai.github.io/langgraph/)
-- **Supabase Docs:** [supabase.com/docs](https://supabase.com/docs)
-- **Render Docs:** [render.com/docs](https://render.com/docs)
+# read person URN from a token
+Invoke-RestMethod -Uri 'https://api.linkedin.com/v2/userinfo' `
+  -Headers @{ Authorization = "Bearer <TOKEN>" }
+```
 
----
-
-**You're all set!** Your LinkedIn Post Agent is ready to generate and publish high-engagement technical content. 🚀
+| Thing | Where |
+|---|---|
+| Env schema | `app/core/config.py` |
+| Publish path | `app/api/routers/posts.py`, `app/services/linkedin.py` |
+| Agent graph | `app/agent/graph.py` |
+| Topic whitelist | `app/agent/nodes/topic_selection.py` |
+| Branding map | `app/branding/config.py` |
+| User resolution | `app/api/auth.py` |
+| Deploy config | `render.yaml` |
+| Prompts | `.prompts/SYSTEM_PROMPT.md` |
